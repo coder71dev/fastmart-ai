@@ -171,7 +171,7 @@ const productDiscovery = specialistWorkflow('specialist-product-discovery', P.PR
   formatJs: `const out = $input.first().json.output;
 const raw = typeof out === 'string' ? out : (out?.output ?? JSON.stringify(out));
 let text = String(raw ?? '').replace(/<[^>]+>/g, '');
-const m = text.match(/META_PRODUCT_IDS:\\s*([\\\\d,\\\\s]+|none)/i);
+const m = text.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
 let product_ids = [];
 if (m && m[1] && !/^none$/i.test(m[1].trim())) {
   product_ids = m[1].split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite);

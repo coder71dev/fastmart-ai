@@ -72,7 +72,12 @@ RULES:
 8. Never invent prices, delivery fees, discounts, or policies. If a tool returns no answer, say you could not find that information.
 9. The ONLY valid cart total is the one in CURRENT SHOPPING CONTEXT or returned by a cart tool. Quote it exactly; never recalculate.
 10. For cart questions keep prose to 1-2 sentences and report the total verbatim (the cart table is rendered by the app automatically).
-11. Always write amounts with the ৳ symbol BEFORE the number (e.g. ৳3,000, never 3000৳).`;
+11. Always write amounts with the ৳ symbol BEFORE the number (e.g. ৳3,000, never 3000৳).
+12. WIDGET CARDS (block markers — the app turns these into visual cards):
+    - When your answer recommends products, end your reply with a line exactly: [BLOCK product-grid]
+    - Whenever you report a cart view or cart total, end your reply with a line exactly: [BLOCK cart-table]
+    - If a specialist's text already ends with a [BLOCK ...] marker, keep that marker line at the very end of your reply.
+    - Always keep the specialist's META_PRODUCT_IDS footer line too (system needs it); put the [BLOCK ...] line after it.`;
 
 // ---------------------------------------------------------------------------
 // Product discovery specialist prompt  (ProductDiscoveryAgent::instructions)
@@ -102,7 +107,10 @@ RULES:
 At the very end of your reply, on its OWN line, list every product id you recommended, formatted exactly as:
 META_PRODUCT_IDS: 12, 34, 56
 If you referenced no products end with: META_PRODUCT_IDS: none
-This footer is metadata for the system — never show it to the customer.`;
+This footer is metadata for the system — never show it to the customer.
+When you recommended products, add one more line AFTER the footer, exactly:
+[BLOCK product-grid]
+This marker tells the app to render product cards — always include it with recommendations.`;
 
 // ---------------------------------------------------------------------------
 // Support specialist prompt  (SupportAgent::instructions; policy text ported
@@ -153,6 +161,10 @@ CHECKOUT:
 - Guide the customer to checkout when they are ready. Remind them free shipping applies over ৳1500.
 
 NOTE: You CANNOT add items. If the customer asks to add, tell them the main assistant is handling the addition and stop.
+
+Whenever you report a cart view, a new total after a removal, or an empty cart, end your reply with a line exactly:
+[BLOCK cart-table]
+This marker tells the app to render the cart table — always include it on cart reports.
 
 Be warm, efficient, and conversational. Respond in the customer's language (English or Bengali বাংলা).
 Always write amounts with the ৳ symbol BEFORE the number (e.g. ৳3,000).`;

@@ -88,7 +88,7 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 - [x] Agent + Postgres memory (copy `ShoppingAssistant` system prompt) — ✅ done 2026-09-03: `agent-chat (prod webhook)` live, PG memory table `chat_memory_fastmart`, remembers past chats (proven)
 - [x] Custom HTTP tools: product search, cart, orders, policy lookup — ✅ done 2026-09-03: search-products, product-detail, cart-add, read-cart, cart-summary, remove-line, track-order (policies answered from hardcoded map, as in biz-buddy)
 - [x] 4 specialist sub-workflows (product / support / cart / orders) — ✅ done 2026-09-03: all deployed + tested live end-to-end (find → buy → show cart → remove, support answers, order-track). Gotcha fixed: `$fromAI` inside `queryParameters` does NOT resolve in httpRequestTool 4.2 as AI tool — params must be embedded in the URL string
-- [ ] Blocks JSON Code node (price-guard copy of `richTextTotalMismatch`)
+- [x] Blocks JSON Code node (price-guard copy of `richTextTotalMismatch`) — ✅ done 2026-09-03: product-grid + cart-table blocks (live re-fetch = ground truth) + price guard on cart/grid totals; verified live. Gotchas: n8n Code node sandbox has NO `$helpers`/`fetch` — use `require('http')` enabled via `NODE_FUNCTION_ALLOW_BUILTIN=http,https,url`; `cart-summary` API returns 0 for guest (tmp-*) carts so totals are computed from the cart read-back
 - [ ] External eval harness (Node/Python; not n8n-native)
 
 ### Part 3 — Deploy to VPS

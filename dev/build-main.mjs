@@ -54,10 +54,29 @@ function firstJson(s) {
   if (start < 0) return null;
   try { return JSON.parse(s.slice(start)); } catch { return null; }
 }
+function httpText(url, { method, body } = {}) {
+  return new Promise((resolve) => {
+    let u = null;
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve(null); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return resolve(null);
+    const httpMod = require(u.protocol === 'https:' ? 'https' : 'http');
+    const headers = body != null ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(String(body)) } : {};
+    const req = httpMod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: method || 'GET', headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; if (data.length > 5000000) { req.destroy(); resolve(null); } });
+      res.on('end', () => resolve(data));
+      res.on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(20000, () => { req.destroy(); resolve(null); });
+    if (body != null) req.write(String(body));
+    req.end();
+  });
+}
 async function call(url, opts) {
   try {
-    const r = await $helpers.httpRequest({ url, method: opts && opts.method ? opts.method : 'GET', json: false, ...(opts && opts.body ? { body: opts.body, headers: { 'Content-Type': 'application/json' } } : {}) });
-    return firstJson(textOf(r));
+    const t = await httpText(url, { method: opts && opts.method ? opts.method : 'GET', body: opts && opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null });
+    return firstJson(t);
   } catch (e) {
     return null;
   }
@@ -176,25 +195,198 @@ const CART_ADD_TOOL = {
 };
 
 // ---------------------------------------------------------------------------
-// Response (Code) - proven spike logic + conversation echo
+// Response (Code) - contract JSON + blocks + price-guard.
+// Port of biz-buddy ChatController::buildBlocks / richTextTotalMismatch:
+//  - [BLOCK product-grid]  -> {type:'product-grid', products:[ProductCardData]}
+//    (ids from META_PRODUCT_IDS, re-fetched live = ground truth; empty resolves dropped)
+//  - [BLOCK cart-table]    -> {type:'cart-table', items, total, count} (live re-read)
+//  - price guard: a ৳ figure next to the word "total" that contradicts the
+//    emitted cards/cart is replaced with the true total, so the user never
+//    sees a price that fights the cards beside it.
+//  - markers + META footer are stripped from reply (system-only metadata).
+// Block failures must NEVER break the reply: everything is wrapped in try/catch.
 // ---------------------------------------------------------------------------
 const RESPONSE_CODE = `
 const d = $input.first().json.output;
 const raw = typeof d === 'string' ? d : (d && typeof d === 'object' && 'output' in d ? d.output : JSON.stringify(d));
+let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
+// Gemini occasionally emits a mojibake rune (αº│) for ৳ — normalize it so the
+// price guard and currency formatter can see the real amounts.
+replyTxt = replyTxt.replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3');
 function plainText(s) {
   return String(s ?? '')
     .replace(/<[^>]+>/g, '')
-    .replace(/\\[BLOCK[^\\]]*\\]/g, '')
+    .replace(/\\[BLOCK[^\\]]*\\]/gi, '')
     .replace(/\\n{2,}/g, '\\n')
     .trim();
 }
 function stripFooter(s) {
   return String(s ?? '').replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '').trim();
 }
+function normalizeCurrency(s) {
+  return String(s ?? '').replace(/(\\d[\\d,]*(?:\\.\\d{1,2})?)\\s*৳/g, '৳$1');
+}
+function fmtTaka(n) {
+  return '৳' + Math.round(Number(n) || 0).toLocaleString('en-US');
+}
+function guardTotal(reply, actual) {
+  return String(reply ?? '').replace(/(total[^৳\\d\\n]{0,30}৳\\s*)(\\d[\\d,]*)/gi, (m, pre, num) => {
+    const v = parseFloat(String(num).replace(/,/g, ''));
+    if (!Number.isFinite(v) || Math.abs(v - actual) < 0.01) return m;
+    return pre + fmtTaka(actual).slice(1);
+  });
+}
+const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+function textOf(r) {
+  if (typeof r === 'string') return r;
+  if (r && typeof r === 'object') {
+    if ('body' in r) return typeof r.body === 'string' ? r.body : JSON.stringify(r.body);
+    return JSON.stringify(r);
+  }
+  return String(r ?? '');
+}
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{');
+  const j = s.indexOf('[');
+  const start = (i < 0 ? j : (j < 0 ? i : Math.min(i, j)));
+  if (start < 0) return null;
+  try { return JSON.parse(s.slice(start)); } catch { return null; }
+}
+async function call(url, opts) {
+  try {
+    const t = await httpText(url, { method: opts && opts.method ? opts.method : 'GET', body: opts && opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null });
+    return firstJson(t);
+  } catch (e) {
+    return null;
+  }
+}
+function httpText(url, { method, body } = {}) {
+  return new Promise((resolve) => {
+    let u = null;
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve(null); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return resolve(null);
+    const httpMod = require(u.protocol === 'https:' ? 'https' : 'http');
+    const headers = body != null ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(String(body)) } : {};
+    const req = httpMod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: method || 'GET', headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; if (data.length > 5000000) { req.destroy(); resolve(null); } });
+      res.on('end', () => resolve(data));
+      res.on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(20000, () => { req.destroy(); resolve(null); });
+    if (body != null) req.write(String(body));
+    req.end();
+  });
+}
+function toCard(p) {
+  try {
+    if (!p || typeof p !== 'object') return null;
+    const id = Number(p.id) || 0;
+    const name = String(p.name ?? '').trim();
+    const price = Number(p.calculable_price ?? p.nonformated_price ?? p.price ?? 0) || 0;
+    if (!id || !name || !(price > 0)) return null;
+    const brand = p.brand && typeof p.brand === 'object' ? (p.brand.name ?? null) : (p.brand ?? null);
+    const cat = p.category && typeof p.category === 'object' ? (p.category.name ?? null) : (p.category ?? null);
+    const vars = Array.isArray(p.variant) ? p.variant.map((v) => ({ id: Number(v.id) || 0, name: String(v.variant ?? v.name ?? ''), price: Number(v.discount_price ?? v.price ?? 0) || 0 })).filter((v) => v.id) : [];
+    const desc = String(p.short_description ?? p.description ?? '').replace(/<[^>]+>/g, '').replace(/\\s+/g, ' ').trim().slice(0, 300) || null;
+    return { id, name, slug: String(p.slug ?? ''), price, rating: Number(p.rating ?? 0) || 0, reviewCount: Number(p.num_of_sale ?? p.total_reviews ?? 0) || 0, description: desc, image: p.thumbnail_image ?? null, thumbnail: p.thumbnail_image ?? null, category: cat, brand, hasVariants: vars.length > 0, variants: vars };
+  } catch (e) {
+    return null;
+  }
+}
 const out = { reply: '', conversation_id: null, blocks: [], token_usage: null };
 try { out.conversation_id = $('Prepare Input').first().json.userId; } catch {}
-let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
-const replyClean = plainText(stripFooter(replyTxt)).slice(0, 8000);
+let userId = null;
+try { userId = $('Prepare Input').first().json.userId; } catch {}
+const wantsGrid = /\\[BLOCK\\s+product-grid\\]/i.test(replyTxt);
+const wantsCart = /\\[BLOCK\\s+cart-table\\]/i.test(replyTxt);
+let ids = [];
+try {
+  const m = replyTxt.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
+  if (m && m[1] && !/^none$/i.test(m[1].trim())) {
+    ids = [...new Set(m[1].split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite))].slice(0, 5);
+  }
+} catch {}
+// The orchestrator often drops META/marker lines when rephrasing, so also read
+// the specialists' raw tool results (intermediateSteps observations). The
+// product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
+// the cart specialist appends [BLOCK cart-table].
+let wantsGridObs = false;
+let wantsCartObs = false;
+try {
+  const steps = $input.first().json.intermediateSteps || [];
+  for (const st of steps) {
+    const o = st && st.observation;
+    let s = '';
+    if (typeof o === 'string') s = o;
+    else if (o != null) { try { s = JSON.stringify(o); } catch {} }
+    if (!s) continue;
+    if (/\\[BLOCK\\s+product-grid\\]/i.test(s)) wantsGridObs = true;
+    if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
+    if (!ids.length) {
+      try {
+        const parsed = typeof o === 'string' ? JSON.parse(o) : o;
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        for (const it of arr) {
+          const pids = it && Array.isArray(it.product_ids) ? it.product_ids : (it && it.json && Array.isArray(it.json.product_ids) ? it.json.product_ids : null);
+          if (pids) {
+            const clean = [...new Set(pids.map((n) => parseInt(n, 10)).filter(Number.isFinite))].slice(0, 5);
+            if (clean.length) { ids = clean; break; }
+          }
+        }
+      } catch {}
+      if (!ids.length) {
+        const m2 = s.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+)/i);
+        if (m2) ids = [...new Set(m2[1].split(',').map((x) => parseInt(x, 10)).filter(Number.isFinite))].slice(0, 5);
+      }
+    }
+  }
+} catch {}
+const doGrid = wantsGrid || wantsGridObs;
+const doCart = wantsCart || wantsCartObs;
+const blocks = [];
+if (doGrid && ids.length) {
+  try {
+    const cards = [];
+    for (const pid of ids) {
+      const det = await call(base + '/api/v3/products/' + pid);
+      const obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
+      const card = toCard(obj);
+      if (card) cards.push(card);
+    }
+    if (cards.length) {
+      blocks.push({ type: 'product-grid', products: cards });
+      const gridTotal = cards.reduce((s, c) => s + c.price, 0);
+      replyTxt = guardTotal(replyTxt, gridTotal);
+    }
+  } catch {}
+}
+if (doCart && userId) {
+  try {
+    const rows = [];
+    const read = await call(base + '/api/v3/carts/' + encodeURIComponent(userId), { method: 'POST' });
+    if (Array.isArray(read)) {
+      for (const shop of read) {
+        for (const it of (shop && shop.cart_items) || []) {
+          if (!it) continue;
+          rows.push({ key: String(it.id ?? (rows.length + 1)), product_id: Number(it.product_id) || 0, variation_id: null, name: String(it.product_name ?? 'Product'), variant_name: String(it.variation ?? '') || null, price: Number(it.price) || 0, quantity: Number(it.quantity) || 0 });
+        }
+      }
+    }
+    if (rows.length) {
+      // cart-summary API returns 0 for guest (tmp-*) carts (reads server session, not the guest cart),
+      // so compute the total from the read-back rows — those carry the authoritative price.
+      const total = rows.reduce((s, r) => s + r.price * r.quantity, 0);
+      const count = rows.reduce((s, r) => s + r.quantity, 0);
+      blocks.push({ type: 'cart-table', items: rows, total, count });
+      replyTxt = guardTotal(replyTxt, total);
+    }
+  } catch {}
+}
+out.blocks = blocks;
+const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
 let usage = null;
 try { usage = $input.first().json.tokenUsage; } catch {}
