@@ -7,7 +7,7 @@ import * as P from './prompts.js';
 const OUT = 'dev/out';
 const GEMINI_CRED = { id: 'NZ6P1UaAuMYlAFa1', name: 'Gemini API Palm v3' };
 const PG_CRED = { id: 'EsaKbJSqeQFEMuwd', name: 'fastmart Postgres (fastmart_ai DB)' };
-const MODEL = 'models/gemini-3.6-flash';
+const MODEL = 'models/gemini-3.7-flash';
 
 // ids produced by dev/deploy.mjs
 const SPEC = {
@@ -312,16 +312,20 @@ try {
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
 // product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
-// the cart specialist appends [BLOCK cart-table].
+// the cart specialist appends [BLOCK cart-table]. A successful cart-add this
+// turn also warrants the cart table (its true total is re-read live below).
 let wantsGridObs = false;
 let wantsCartObs = false;
+let cartAddRan = false;
 try {
   const steps = $input.first().json.intermediateSteps || [];
   for (const st of steps) {
-    const o = st && st.observation;
+    const toolName = String(st && st.action && st.action.tool || '');
     let s = '';
+    const o = st && st.observation;
     if (typeof o === 'string') s = o;
     else if (o != null) { try { s = JSON.stringify(o); } catch {} }
+    if (toolName === 'cart-add' && /added to cart successfully/i.test(s)) cartAddRan = true;
     if (!s) continue;
     if (/\\[BLOCK\\s+product-grid\\]/i.test(s)) wantsGridObs = true;
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
@@ -345,7 +349,7 @@ try {
   }
 } catch {}
 const doGrid = wantsGrid || wantsGridObs;
-const doCart = wantsCart || wantsCartObs;
+const doCart = wantsCart || wantsCartObs || cartAddRan;
 const blocks = [];
 if (doGrid && ids.length) {
   try {

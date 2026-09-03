@@ -8,7 +8,7 @@ const OUT = 'dev/out';
 fs.mkdirSync(OUT, { recursive: true });
 
 const GEMINI_CRED = { id: 'NZ6P1UaAuMYlAFa1', name: 'Gemini API Palm v3' };
-const MODEL = 'models/gemini-3.6-flash';
+const MODEL = 'models/gemini-3.7-flash';
 const rand = () => Math.random().toString(36).slice(2, 8);
 
 const node = (o) => ({ id: o.id || rand(), disabled: false, ...o });
