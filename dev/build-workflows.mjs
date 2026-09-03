@@ -152,7 +152,10 @@ const productDiscovery = specialistWorkflow('specialist-product-discovery', P.PR
         name: 'search-products',
         description: P.TOOL.searchProducts,
         method: 'GET',
-        url: `=http://fastmart-pro.test/api/v4/products?keyword={{ encodeURIComponent($fromAI('query', 'product keyword to search', 'string')) }}&limit=5`,
+        url: `=http://fastmart-pro.test/api/v4/products?keyword={{ encodeURIComponent($fromAI('query', 'product keyword to search', 'string')) }}&limit=5{{ $fromAI('brand', 'optional brand name filter', 'string') ? '&brand=' + encodeURIComponent($fromAI('brand', 'optional brand name filter', 'string')) : '' }}`,
+        // NOTE: max_price intentionally NOT passed: store Meilisearch index has no
+        // filterable attributes, so ?max_price= crashes the API (unit_price not filterable).
+        // Budget is enforced by the specialist prompt from returned prices instead.
       }),
     },
     {
