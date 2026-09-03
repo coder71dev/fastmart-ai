@@ -1,0 +1,80 @@
+{
+  "name": "wf5-test-bucket (verifier helper)",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{ json: { success: true, via: 'wf5-test-bucket', when: new Date().toISOString() } }];",
+        "options": {}
+      },
+      "id": "once-1",
+      "name": "Once",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-20, -220],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "spike/wf5-test-bucket",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-5a",
+      "name": "Webhook A (test bucket)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "spike/wf5-echo",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-5b",
+      "name": "Webhook B (echo)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 0],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const body = $input.first().json.body ?? {};\nreturn [{ json: { echo: body, receivedAt: new Date().toISOString(), via: 'wf5-echo' } }];",
+        "options": {}
+      },
+      "id": "echo-1",
+      "name": "Echo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 0],
+      "disabled": false
+    }
+  ],
+  "connections": {
+    "Webhook A (test bucket)": {
+      "main": [
+        [
+          { "node": "Once", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Webhook B (echo)": {
+      "main": [
+        [
+          { "node": "Echo", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

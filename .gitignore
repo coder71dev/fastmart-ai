@@ -1,0 +1,16 @@
+# Secrets — never commit (local only)
+.env
+dev/cred-pg.json
+n8n_cookies.txt
+
+# Generated build output (regenerate with node dev/build-workflows.mjs + build-main.mjs)
+dev/out/
+
+# Tool junk
+.commandcode/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+node_modules/

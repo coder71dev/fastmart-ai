@@ -1,0 +1,240 @@
+{
+  "name": "agent-chat (prod webhook)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "spike/agent-chat",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const body = $input.first().json.body ?? {};\nconst msg = (body.message ?? '').toString().trim();\nconst cid = (body.conversation_id ?? '').toString().trim();\nconst profile = body.profile ?? null;\nif (!msg) throw new Error('widget: message is required');\nconst userId = (cid && cid.startsWith('tmp')) ? cid : ('tmp-widget-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));\nreturn [{ json: { chatInput: msg, userId, profile } }];"
+      },
+      "id": "prepare-1",
+      "name": "Prepare Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        0
+      ],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.chatInput }}",
+        "options": {
+          "systemMessage": "=You are Perfecto AI, a beauty shopping assistant for Perfecto BD. Prices are in Bangladeshi Taka (৳).\n\nProducts: when the user asks about products, search or recommendations, ALWAYS call the search-products tool first with a good keyword, then present the real results (name, price ৳). Never invent products.\n\nCart: use the get-cart tool whenever the user asks about their cart (view, total, what's in my cart, cart total). The current guest cart user id is: {{ $json.userId }} (pass it as the user_id argument).\n\nAlways tell the user the real product price in ৳ from the search/tool results.\n\nWhen they are done answering, if they asked for a cart view you MUST end your reply with a line exactly like:\n[BLOCK cart-table]\n\nIf your main answer is product recommendations, you MAY end with a line exactly like:\n[BLOCK product-grid]\n\n(answer always comes before the block marker)",
+          "returnIntermediateSteps": true
+        }
+      },
+      "id": "agent-1",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        340,
+        0
+      ],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.6-flash",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "model-1",
+      "name": "Gemini Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        340,
+        -180
+      ],
+      "disabled": false,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "NZ6P1UaAuMYlAFa1",
+          "name": "Gemini API Palm v3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "search-products",
+        "description": "Search the store's Beautycos product catalog by keyword. Returns real products with id, name, price in Bangladeshi Taka and availability. Use for ANY product question.",
+        "toolDescription": "Search the store's Beautycos product catalog by keyword. Returns real products with id, name, price in Bangladeshi Taka and availability. Use for ANY product question.",
+        "method": "GET",
+        "url": "http://fastmart-pro.test/api/v4/products",
+        "authentication": "none",
+        "sendQuery": true,
+        "specifyQuery": "manually",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "keyword",
+              "value": "={{ $fromAI('query', 'product keyword to search', 'string') }}"
+            },
+            {
+              "name": "limit",
+              "value": "5"
+            }
+          ]
+        },
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "tool-search",
+      "name": "search-products",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        180
+      ],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "name": "get-cart",
+        "description": "Read the current guest cart from the store. Expects argument user_id (the guest cart id, e.g. tmp-widget-xxx). Returns cart items with product name, variation, price in ৳ and quantity.",
+        "toolDescription": "Read the current guest cart from the store. Expects argument user_id (the guest cart id, e.g. tmp-widget-xxx). Returns cart items with product name, variation, price in ৳ and quantity.",
+        "method": "POST",
+        "url": "=http://fastmart-pro.test/api/v3/carts/{{ $fromAI('user_id', 'the guest cart user_id to read', 'string') }}",
+        "authentication": "none",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "tool-cart",
+      "name": "get-cart",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        300
+      ],
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json.output;\nconst raw = typeof d === 'string' ? d : (d?.output ?? JSON.stringify(d));\nfunction plainText(s) {\n  return String(s ?? '')\n    .replace(/<[^>]+>/g, '')\n    .replace(/\\[BLOCK[^\\]]*\\]/g, '')\n    .replace(/\\n{2,}/g, '\\n')\n    .trim();\n}\nfunction findBlock(html) {\n  const i = html.indexOf('[BLOCK');\n  if (i < 0) return null;\n  const start = i + '[BLOCK'.length;\n  const end = html.indexOf(']', start);\n  const kind = end > 0 ? html.slice(start, end).trim() : '';\n  return { kind, idx: i };\n}\nfunction stepObservation(toolName) {\n  const steps = $input.first().json.intermediateSteps;\n  if (!Array.isArray(steps)) return null;\n  for (const st of steps) {\n    const tool = st?.action?.tool;\n    const obs = st?.observation;\n    if (tool && String(tool).toLowerCase() === toolName && obs != null) return obs;\n  }\n  return null;\n}\nfunction firstJson(str) {\n  const i = str.indexOf('{');\n  const j = str.indexOf('[');\n  const start = (i < 0 ? j : (j < 0 ? i : Math.min(i, j)));\n  if (start < 0) return null;\n  const s = str.slice(start);\n  try { return JSON.parse(s); } catch { return null; }\n}\nfunction unwrap(v) {\n  let cur = v;\n  for (let d = 0; d < 6; d++) {\n    if (typeof cur === 'string') {\n      const parsed = firstJson(cur);\n      if (parsed === null) return cur;\n      cur = parsed;\n      continue;\n    }\n    if (Array.isArray(cur)) {\n      if (cur.length === 1 && cur[0] && typeof cur[0] === 'object' && cur[0].data !== undefined && typeof cur[0].data === 'string') {\n        cur = cur[0].data;\n        continue;\n      }\n      if (cur.length === 1 && cur[0] !== undefined) { cur = cur[0]; continue; }\n      return cur;\n    }\n    if (cur && typeof cur === 'object') {\n      if (cur.data !== undefined && typeof cur.data === 'string') { cur = cur.data; continue; }\n      if (cur.data !== undefined && (Array.isArray(cur.data) || typeof cur.data === 'object')) { cur = cur.data; continue; }\n      return cur;\n    }\n    return cur;\n  }\n  return cur;\n}\nfunction searchMsg() {\n  const obs = stepObservation('search-products');\n  if (!obs) return [];\n  const text = typeof obs === 'string' ? obs : JSON.stringify(obs);\n  const root = unwrap(text);\n  const list = Array.isArray(root) ? root : (root && Array.isArray(root.data) ? root.data : null);\n  if (!list) return [];\n  return list.map(function (p) {\n    if (!p) return null;\n    const category = p.category || (p.category_info && p.category_info.name) || null;\n    const brand = (p.brand_info && p.brand_info.name) || p.brand || null;\n    return {\n      id: p.id, name: p.name, slug: p.slug, price: p.nonformated_price,\n      rating: p.rating || 0, reviewCount: p.total_reviews || 0,\n      description: p.description || null, image: p.thumbnail_image || null,\n      thumbnail: p.thumbnail_image || null, category, brand,\n      hasVariants: !!p.variant_product,\n      variants: (Array.isArray(p.choice_options) && p.choice_options.length > 0 ? p.choice_options[0].values || [] : []).map(function (v) {\n        return { id: v.id || v.name, name: v.name, price: p.nonformated_price };\n      }),\n    };\n  }).filter(Boolean);\n}\nfunction cartMsg() {\n  const obs = stepObservation('get-cart');\n  if (!obs) return [];\n  const text = typeof obs === 'string' ? obs : JSON.stringify(obs);\n  const root = unwrap(text);\n  const shops = Array.isArray(root) ? root : (root && Array.isArray(root.cart_items) ? [root] : []);\n  const items = [];\n  for (const shop of shops) {\n    for (const it of (shop.cart_items || [])) {\n      items.push({\n        key: String(it.id), product_id: it.product_id, variation_id: it.variation || null,\n        name: it.product_name || 'Product', variant_name: it.variation || null,\n        price: it.price, quantity: it.quantity,\n      });\n    }\n  }\n  return items;\n}\nconst out = { reply: d, conversation_id: null, blocks: [], token_usage: null };\ntry { out.conversation_id = $('Prepare Input').first().json.userId; } catch {}\nif (typeof d === 'string') {\n  const b = findBlock(d);\n  if (b) {\n    const cleaned = d.replace(/\\[BLOCK[^\\]]*\\]/g, '').replace(/\\n[\\n\\s]*$/, '');\n    out.reply = cleaned;\n    const kind = b.kind.toLowerCase();\n    if (kind === 'cart-table') {\n      const items = cartMsg();\n      const total = items.reduce(function (s2, i2) { return s2 + i2.price * i2.quantity; }, 0);\n      out.blocks.push({ type: 'cart-table', items: items.slice(0, 20), total, count: items.length });\n    } else if (kind === 'product-grid') {\n      const list = searchMsg();\n      if (list.length > 0) out.blocks.push({ type: 'product-grid', heading: 'Top picks', products: list.slice(0, 6), columns: 3 });\n    }\n  }\n}\nif (out.reply) out.reply = plainText(out.reply).slice(0, 8000);\nlet usage = null;\ntry { usage = $input.first().json.tokenUsage; } catch {}\nif (usage) out.token_usage = { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens };\nreturn [{ json: out }];"
+      },
+      "id": "response-1",
+      "name": "Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "disabled": false
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Input": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search-products": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-cart": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

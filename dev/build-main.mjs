@@ -1,0 +1,322 @@
+// Builds the Part 2 MAIN agent-chat workflow (context + memory + orchestrator
+// + specialist tools + direct store tools + response). Specialists' workflow
+// ids are injected from the deploy step (passed via env or edited below).
+import fs from 'node:fs';
+import * as P from './prompts.js';
+
+const OUT = 'dev/out';
+const GEMINI_CRED = { id: 'NZ6P1UaAuMYlAFa1', name: 'Gemini API Palm v3' };
+const PG_CRED = { id: 'EsaKbJSqeQFEMuwd', name: 'fastmart Postgres (fastmart_ai DB)' };
+const MODEL = 'models/gemini-3.6-flash';
+
+// ids produced by dev/deploy.mjs
+const SPEC = {
+  productDiscovery: 'DQ39wgxL370oX15x',
+  supportSpecialist: '84zzrn7RoIof8lhC',
+  cartSpecialist: '1epRnYl6wTXaIxMf',
+  orderSpecialist: 'TMlk5KZqAZB5ysy7',
+};
+const N8N = { spec: SPEC };
+
+const rand = () => Math.random().toString(36).slice(2, 8);
+const node = (o) => ({ id: o.id || rand(), disabled: false, ...o });
+const pos = (x, y) => [x, y];
+
+const WEBHOOK_ID = '9c2a1d7e-4b4f-4d9e-9c0a-1f2a3b4c5d6e';
+
+// ---------------------------------------------------------------------------
+// Prepare Input + context builder (Code)
+// ---------------------------------------------------------------------------
+const PREPARE_CODE = `
+const body = $input.first().json.body ?? {};
+const msgRaw = (body.message ?? '').toString().trim();
+const cid = (body.conversation_id ?? '').toString().trim();
+const profile = (body.profile && typeof body.profile === 'object') ? body.profile : null;
+const evalMode = body.eval === true || body.eval === 'true';
+if (!msgRaw) throw new Error('widget: message is required');
+const userId = (cid && cid.startsWith('tmp')) ? cid : ('tmp-widget-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+
+const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+
+function textOf(r) {
+  if (typeof r === 'string') return r;
+  if (r && typeof r === 'object') {
+    if ('body' in r) return typeof r.body === 'string' ? r.body : JSON.stringify(r.body);
+    return JSON.stringify(r);
+  }
+  return String(r ?? '');
+}
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{');
+  const j = s.indexOf('[');
+  const start = (i < 0 ? j : (j < 0 ? i : Math.min(i, j)));
+  if (start < 0) return null;
+  try { return JSON.parse(s.slice(start)); } catch { return null; }
+}
+async function call(url, opts) {
+  try {
+    const r = await $helpers.httpRequest({ url, method: opts && opts.method ? opts.method : 'GET', json: false, ...(opts && opts.body ? { body: opts.body, headers: { 'Content-Type': 'application/json' } } : {}) });
+    return firstJson(textOf(r));
+  } catch (e) {
+    return null;
+  }
+}
+
+let cats = [];
+let items = [];
+let total = null;
+let count = 0;
+
+const catsRes = await call(base + '/api/v3/categories?parent_id=0');
+if (catsRes && Array.isArray(catsRes.data)) {
+  cats = catsRes.data.slice(0, 12).map((c) => c && c.name).filter(Boolean);
+}
+
+if (userId.startsWith('tmp')) {
+  const read = await call(base + '/api/v3/carts/' + encodeURIComponent(userId), { method: 'POST' });
+  if (Array.isArray(read)) {
+    for (const shop of read) {
+      for (const it of (shop && shop.cart_items) || []) {
+        if (!it) continue;
+        const price = Number(it.price) || 0;
+        const qty = Number(it.quantity) || 0;
+        items.push({ product_id: it.product_id, name: it.product_name || 'Product', quantity: qty, line: price * qty });
+        count += qty;
+      }
+    }
+  }
+  const sum = await call(base + '/api/v3/cart-summary/' + encodeURIComponent(userId));
+  if (sum) total = sum.grand_total != null ? sum.grand_total : (sum.grand_total_value != null ? sum.grand_total_value : null);
+  if (total == null) total = items.reduce((s2, i2) => s2 + i2.line, 0);
+}
+
+const parts = [];
+parts.push('[guest cart user: ' + userId + ']');
+if (cats.length) parts.push('CATEGORIES: ' + cats.join(', '));
+let cartTxt = 'CURRENT CART (' + count + ' item' + (count === 1 ? '' : 's');
+if (total != null) cartTxt += ', total: ৳' + total;
+cartTxt += '):';
+if (items.length) {
+  cartTxt += '\\n' + items.map((i2) => '- [product_id: ' + i2.product_id + '] ' + i2.name + ' × ' + i2.quantity + ' — ৳' + i2.line).join('\\n');
+} else {
+  cartTxt += ' (empty)';
+}
+parts.push(cartTxt);
+
+if (profile) {
+  const bits = [];
+  if (profile.skin) bits.push('Skin: ' + profile.skin);
+  if (profile.concern) bits.push('Concern: ' + profile.concern);
+  if (profile.budget) bits.push('Budget: ' + profile.budget);
+  if (bits.length) parts.push('CUSTOMER PROFILE: ' + bits.join(' | '));
+}
+
+const ctx = 'CURRENT SHOPPING CONTEXT (authoritative - trust this over conversation history):\\n' + parts.join('\\n');
+const systemPrompt = ${JSON.stringify(P.ORCHESTRATOR)} + '\\n\\n' + ctx;
+
+return [{ json: { chatInput: msgRaw, userId, sessionId: userId, conversationId: userId, profile, evalMode, systemPrompt } }];
+`;
+
+// ---------------------------------------------------------------------------
+// HTTP tools (direct on orchestrator)
+// ---------------------------------------------------------------------------
+function httpToolParams({ name, description, method, url, queryParams }) {
+  const p = {
+    name,
+    description,
+    toolDescription: description,
+    method,
+    url,
+    authentication: 'none',
+    sendHeaders: false,
+    sendBody: false,
+    options: { response: { response: { neverError: true, responseFormat: 'text', outputPropertyName: 'data' } } },
+  };
+  if (queryParams) {
+    p.sendQuery = true;
+    p.specifyQuery = 'manually';
+    p.queryParameters = { parameters: queryParams };
+  }
+  return p;
+}
+
+// Specialist Workflow Tool factory
+function specTool(name, description, workflowId) {
+  return {
+    name,
+    params: {
+      name,
+      description,
+      source: 'database',
+      workflowId: { value: workflowId },
+      workflowInputs: { mappingMode: 'defineBelow', value: null },
+    },
+  };
+}
+
+const SPECIALIST_TOOLS = [
+  specTool('product_discovery', P.TOOL.productDiscovery, SPEC.productDiscovery),
+  specTool('support_specialist', P.TOOL.supportSpecialist, SPEC.supportSpecialist),
+  specTool('cart_specialist', P.TOOL.cartSpecialist, SPEC.cartSpecialist),
+  specTool('order_management', P.TOOL.orderManagement, SPEC.orderSpecialist),
+];
+
+// Cart-add stays on orchestrator (orchestrator searches via product_discovery, then adds directly)
+// NOTE: $fromAI in queryParams does NOT resolve in httpRequestTool 4.2 as AI tool
+// (proven: search-products sent no keyword). Embed params directly in URL instead.
+const CART_ADD_TOOL = {
+  name: 'cart-add',
+  params: httpToolParams({
+    name: 'cart-add',
+    description: P.TOOL.cartAdd,
+    method: 'POST',
+    url: `=${P.STORE}/api/v3/carts/add?user_id={{ encodeURIComponent($fromAI('user_id', 'the guest cart user id shown in CURRENT SHOPPING CONTEXT', 'string')) }}&id={{ $fromAI('product_id', 'the product id to add (from product_discovery results)', 'number') }}&quantity={{ $fromAI('quantity', 'quantity to add (1-10)', 'number') }}`,
+  }),
+};
+
+// ---------------------------------------------------------------------------
+// Response (Code) - proven spike logic + conversation echo
+// ---------------------------------------------------------------------------
+const RESPONSE_CODE = `
+const d = $input.first().json.output;
+const raw = typeof d === 'string' ? d : (d && typeof d === 'object' && 'output' in d ? d.output : JSON.stringify(d));
+function plainText(s) {
+  return String(s ?? '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\\[BLOCK[^\\]]*\\]/g, '')
+    .replace(/\\n{2,}/g, '\\n')
+    .trim();
+}
+function stripFooter(s) {
+  return String(s ?? '').replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '').trim();
+}
+const out = { reply: '', conversation_id: null, blocks: [], token_usage: null };
+try { out.conversation_id = $('Prepare Input').first().json.userId; } catch {}
+let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
+const replyClean = plainText(stripFooter(replyTxt)).slice(0, 8000);
+out.reply = replyClean;
+let usage = null;
+try { usage = $input.first().json.tokenUsage; } catch {}
+if (usage) out.token_usage = { promptTokens: usage.promptTokens || 0, completionTokens: usage.completionTokens || 0, totalTokens: usage.totalTokens || 0 };
+return [{ json: out }];
+`;
+
+// ---------------------------------------------------------------------------
+// Assemble workflow
+// ---------------------------------------------------------------------------
+function modelNode(x, y) {
+  return node({
+    parameters: { modelName: MODEL, options: { temperature: 0.2 } },
+    name: 'Gemini Model',
+    type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
+    typeVersion: 1,
+    position: pos(x, y),
+    credentials: { googlePalmApi: GEMINI_CRED },
+  });
+}
+
+const nodes = [];
+const connections = {};
+
+nodes.push(
+  node({
+    parameters: { httpMethod: 'POST', path: 'spike/agent-chat', responseMode: 'lastNode', options: {} },
+    name: 'Webhook',
+    type: 'n8n-nodes-base.webhook',
+    typeVersion: 2,
+    position: pos(0, 0),
+    webhookId: WEBHOOK_ID,
+  }),
+);
+nodes.push(
+  node({
+    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: PREPARE_CODE },
+    name: 'Prepare Input',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(220, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      promptType: 'define',
+      text: '={{ $json.chatInput }}',
+      options: { systemMessage: '={{ $json.systemPrompt }}', returnIntermediateSteps: true },
+    },
+    name: 'AI Agent',
+    type: '@n8n/n8n-nodes-langchain.agent',
+    typeVersion: 2,
+    position: pos(460, 0),
+  }),
+);
+nodes.push(modelNode(460, -200));
+
+nodes.push(
+  node({
+    parameters: {
+      sessionIdType: 'customKey',
+      sessionKey: '={{ $json.sessionId }}',
+      tableName: 'chat_memory_fastmart',
+      contextWindowLength: 14,
+    },
+    name: 'PG Memory',
+    type: '@n8n/n8n-nodes-langchain.memoryPostgresChat',
+    typeVersion: 1.4,
+    position: pos(460, -420),
+    credentials: { postgres: PG_CRED },
+  }),
+);
+
+let ty = 200;
+// Cart-add (direct on orchestrator)
+const cartAddNode = node({
+  parameters: CART_ADD_TOOL.params,
+  name: CART_ADD_TOOL.name,
+  type: 'n8n-nodes-base.httpRequestTool',
+  typeVersion: 4.2,
+  position: pos(760, ty),
+});
+nodes.push(cartAddNode);
+connections[cartAddNode.name] = { ai_tool: [[{ node: 'AI Agent', type: 'ai_tool', index: 0 }]] };
+ty += 160;
+
+// Specialist tools
+for (const t of SPECIALIST_TOOLS) {
+  const tn = node({
+    parameters: t.params,
+    name: t.name,
+    type: t.params.workflowId ? '@n8n/n8n-nodes-langchain.toolWorkflow' : 'n8n-nodes-base.httpRequestTool',
+    typeVersion: t.params.workflowId ? 2.1 : 4.2,
+    position: pos(760, ty),
+  });
+  nodes.push(tn);
+  connections[tn.name] = { ai_tool: [[{ node: 'AI Agent', type: 'ai_tool', index: 0 }]] };
+  ty += 160;
+}
+
+nodes.push(
+  node({
+    parameters: { language: 'javaScript', jsCode: RESPONSE_CODE },
+    name: 'Response',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(760, 0),
+  }),
+);
+
+connections['Webhook'] = { main: [[{ node: 'Prepare Input', type: 'main', index: 0 }]] };
+connections['Prepare Input'] = { main: [[{ node: 'AI Agent', type: 'main', index: 0 }]] };
+connections['Gemini Model'] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
+connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
+connections['AI Agent'] = { main: [[{ node: 'Response', type: 'main', index: 0 }]] };
+
+const wf = {
+  name: 'agent-chat (prod webhook)',
+  nodes,
+  connections,
+  settings: { executionOrder: 'v1' },
+};
+fs.writeFileSync(`${OUT}/agentChat.json`, JSON.stringify(wf, null, 2));
+console.log('built agentChat.json');
