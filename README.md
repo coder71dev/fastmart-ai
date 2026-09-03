@@ -38,14 +38,20 @@ First launch: complete the owner-account signup in the browser (n8n user managem
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | n8n + n8n's own Postgres (standalone) |
+| `docker-compose.yml` | n8n + its own Postgres + Meilisearch (standalone) |
 | `.env.example` | Env template |
 | `PLAN.md` | Full plan + progress tracking |
 | `spike-checklist.md` | 2-week de-risk spike |
 | `WIDGET-CONTRACT.md` | Widget ⇄ n8n webhook contract (final) |
-| `wf4-agent-chat.json` | Production webhook workflow (agent + guest cart + blocks JSON) |
-| `wf5-test-bucket.json` | Test-bucket helper workflow |
-| `scratchpad-verify.mjs` | End-to-end verifier |
+| `DEPLOY-VPS.md` | Part 3 runbook — VPS, HTTPS, widget cutover |
+| `dev/build-workflows.mjs` | Builds the 4 specialist sub-workflows → `dev/out/*.json` |
+| `dev/build-main.mjs` | Builds the main agent-chat workflow → `dev/out/agentChat.json` |
+| `dev/deploy.mjs` | Upserts + activates workflows into live n8n (owner JWT) |
+| `dev/n8n-admin.mjs` | n8n REST admin helper (list/get/create/update/activate/execs) |
+| `dev/prompts.js` | All system prompts + tool descriptions (single source) |
+| `dev/eval-harness.mjs` | External eval battery — 10 cases, grades real behavior |
+| `wf4-agent-chat.json` / `wf5-test-bucket.json` | Spike-era workflow snapshots (superseded by `dev/build-*`) |
+| `scratchpad-verify.mjs` | Quick webhook smoke test |
 
 ## Environment variables (key ones)
 
@@ -54,9 +60,25 @@ First launch: complete the owner-account signup in the browser (n8n user managem
 | `STORE_BASE_URL` | `https://example.com` | Base URL for ALL store API calls from workflows (portable local → VPS) |
 | `N8N_ENCRYPTION_KEY` | *(empty)* | **Required for production** — set a stable 32-byte hex |
 | `N8N_SECURE_COOKIE` | `false` | `true` behind HTTPS |
+| `N8N_RUNNERS_ENABLED` | `false` | **Keep `false`** — task runners strip `require('http')` from Code nodes, which the cart context + blocks need |
+| `NODE_FUNCTION_ALLOW_BUILTIN` | *(set in compose)* | Must include `http,https,url` — lets Code nodes make store HTTP calls (sandbox has no `$helpers`/`fetch`) |
+| `N8N_BLOCK_ENV_ACCESS_IN_NODE` | `false` | Code nodes read `$env.STORE_BASE_URL` |
 | `N8N_PORT` / `N8N_HOST` / `N8N_PROTOCOL` | `5678` / `localhost` / `http` | How n8n is served |
 | `POSTGRES_*` | n8n defaults | n8n's own DB (never the store DB) |
 | `GENERIC_TIMEZONE` / `TZ` | `Asia/Dhaka` | Business timezone |
+
+## Day-to-day dev loop
+
+```bash
+# 1. Edit prompts/tools in dev/prompts.js or the build scripts
+# 2. Rebuild + deploy everything:
+node dev/build-workflows.mjs && node dev/build-main.mjs
+node dev/deploy.mjs dev/out/productDiscovery.json dev/out/supportSpecialist.json \
+  dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
+
+# 3. Run the eval battery (10 cases, ~3 min, exit 0 = green):
+node dev/eval-harness.mjs                 # or --group cart / --out report.json
+```
 
 ## Store access (HTTP API only)
 

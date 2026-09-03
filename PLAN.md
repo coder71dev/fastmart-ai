@@ -59,6 +59,7 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 | `README.md` | Quick start | ✅ Done |
 | `spike-checklist.md` | 2-week de-risk spike | ✅ Done (4/7 green, 2 blocked, Step 5 near-done) |
 | `WIDGET-CONTRACT.md` | **Widget ⇄ n8n webhook contract** (final) | ✅ Done (2026-09-02) |
+| `DEPLOY-VPS.md` | **Part 3 runbook** (VPS, HTTPS, cutover, acceptance, backups) | ✅ Done (2026-09-03) |
 | `wf4-agent-chat.json` | **Production webhook workflow** (agent + guest cart + blocks JSON) | ✅ Done — ready to import |
 | `wf5-test-bucket.json` | Test-bucket helper workflow | ✅ Done — ready to import |
 | `scratchpad-verify.mjs` | End-to-end verifier for the imported webhook | ✅ Done |
@@ -92,6 +93,7 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 - [x] External eval harness (Node/Python; not n8n-native) — ✅ done 2026-09-03: `dev/eval-harness.mjs` — 10-case battery (product grid, no-fabrication, add→view→remove cart via the store reads the widget uses, support, order-track honesty, PG-memory recall, Bengali). `node dev/eval-harness.mjs` → all green; `--group`, `--webhook`, `--store`, `--out report.json`, exit 0/1. Note: direct HTTP read-backs of guest (tmp-*) carts from an independent host session are unreliable in the dev store (session nuances; add writes can be rolled back), so cart persistence is asserted through the workflow's own per-turn store reads — the same channel the widget uses.
 
 ### Part 3 — Deploy to VPS
+**Runbook:** `DEPLOY-VPS.md` (written 2026-09-03 from the working local setup — preconditions, Caddy/HTTPS, firewall, workflow re-import or DB backup/restore, widget cutover + rollback, acceptance = eval battery 10/10 against the live store, backups, go-live watch). Tick steps there as you go.
 - [ ] Pull `fastmart-ai` to VPS
 - [ ] Reverse proxy (Caddy/nginx) behind same domain/subdomain with **HTTPS** (required for WhatsApp/Messenger webhooks)
 - [ ] Firewall n8n; back up n8n's Postgres volume
