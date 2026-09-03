@@ -90,7 +90,7 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 - [x] Custom HTTP tools: product search, cart, orders, policy lookup — ✅ done 2026-09-03: search-products, product-detail, cart-add, read-cart, cart-summary, remove-line, track-order (policies answered from hardcoded map, as in biz-buddy)
 - [x] 4 specialist sub-workflows (product / support / cart / orders) — ✅ done 2026-09-03: all deployed + tested live end-to-end (find → buy → show cart → remove, support answers, order-track). Gotcha fixed: `$fromAI` inside `queryParameters` does NOT resolve in httpRequestTool 4.2 as AI tool — params must be embedded in the URL string
 - [x] Blocks JSON Code node (price-guard copy of `richTextTotalMismatch`) — ✅ done 2026-09-03: product-grid + cart-table blocks (live re-fetch = ground truth) + price guard on cart/grid totals; verified live. Gotchas: n8n Code node sandbox has NO `$helpers`/`fetch` — use `require('http')` enabled via `NODE_FUNCTION_ALLOW_BUILTIN=http,https,url`; `cart-summary` API returns 0 for guest (tmp-*) carts so totals are computed from the cart read-back
-- [x] External eval harness (Node/Python; not n8n-native) — ✅ done 2026-09-03: `dev/eval-harness.mjs` — 10-case battery (product grid, no-fabrication, add→view→remove cart via the store reads the widget uses, support, order-track honesty, PG-memory recall, Bengali). `node dev/eval-harness.mjs` → all green; `--group`, `--webhook`, `--store`, `--out report.json`, exit 0/1. Note: direct HTTP read-backs of guest (tmp-*) carts from an independent host session are unreliable in the dev store (session nuances; add writes can be rolled back), so cart persistence is asserted through the workflow's own per-turn store reads — the same channel the widget uses.
+- [x] External eval harness (Node/Python; not n8n-native) — ✅ done 2026-09-03: `dev/eval-harness.mjs` — 10-case battery (product grid, no-fabrication, add→view→remove cart via the store reads the widget uses, support, order-track honesty, PG-memory recall, Bengali). `node dev/eval-harness.mjs` → all green; `--group`, `--webhook`, `--store`, `--out report.json`, exit 0/1. Note: an earlier "guest-cart read flake" theory was disproven 2026-09-03 — it was the lite model misreporting cart state; the store DB was consistent. Cart persistence is still asserted through the workflow's own per-turn store reads (the widget's channel).
 
 ### Part 3 — Deploy to VPS
 **Runbook:** `DEPLOY-VPS.md` (written 2026-09-03 from the working local setup — preconditions, Caddy/HTTPS, firewall, workflow re-import or DB backup/restore, widget cutover + rollback, acceptance = eval battery 10/10 against the live store, backups, go-live watch). Tick steps there as you go.
@@ -98,6 +98,10 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 - [ ] Reverse proxy (Caddy/nginx) behind same domain/subdomain with **HTTPS** (required for WhatsApp/Messenger webhooks)
 - [ ] Firewall n8n; back up n8n's Postgres volume
 - [ ] Point widget at the n8n webhook
+
+### Perf tuning (unplanned, done 2026-09-03 after eval-harness complaints of slow turns)
+- [x] Latency investigation: add-to-cart was 9 serialized LLM calls (~29s). Fixed by: model `gemini-3.6-flash` → `gemini-3.7-flash` (benched 6 models in `dev/model-bench.mjs`; `3.5-flash-lite` was 2.6x faster but hallucinated cart state — rejected), specialist recommends straight from search results (no per-candidate product-detail fetches), no post-add cart re-read (Response node renders cart-table on successful cart-add), guest id required in every cart task (was wasting a nested round-trip), cart specialist hardened to never guess cart state. **Result: support 8.7→6.2s, search 25.5→10.5s, add 28.8→10.0s; eval 10/10.** Tooling kept: `dev/exec-timing.mjs`, `dev/model-bench.mjs`.
+- [ ] (optional, next perf step) Collapse two-agent design for simple flows (single agent + direct tools) → target ~5s add-to-cart. Bigger refactor; eval battery is the safety net.
 
 ---
 
