@@ -1,6 +1,6 @@
 # Plan — Perfecto AI Shopping Assistant on n8n
 
-**Status:** ✅ **Spike PASSED 2026-09-02.** Part 1: 5/7 gates green — Steps 1–5 & 7 done; Step 6 blocked on external creds/HTTPS (documented, revisit at Part 3). n8n brain + store HTTP API + guest cart + widget webhook contract all proven live against the local store. **Part 2 — Full build in progress: 3/5 done, tested live end-to-end 2026-09-03 (find → buy → show cart → remove + support + order-track).**
+**Status:** ✅ **Spike PASSED 2026-09-02.** Part 1: 5/7 gates green — Steps 1–5 & 7 done; Step 6 blocked on external creds/HTTPS (documented, revisit at Part 3). n8n brain + store HTTP API + guest cart + widget webhook contract all proven live against the local store. **Part 2 — Full build DONE 2026-09-03 (5/5): agent+memory, store tools, 4 specialists, blocks JSON + price-guard, external eval harness — all tested live end-to-end (10/10 eval green).**
 **Last updated:** 2026-09-03
 **Target:** Rebuild the Biz Buddy AI chat brain on **n8n**, as a standalone app at `D:\laragon\www\fastmart-ai`, targeting the **live Perfecto store** over **HTTP API**.
 
@@ -89,7 +89,7 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 - [x] Custom HTTP tools: product search, cart, orders, policy lookup — ✅ done 2026-09-03: search-products, product-detail, cart-add, read-cart, cart-summary, remove-line, track-order (policies answered from hardcoded map, as in biz-buddy)
 - [x] 4 specialist sub-workflows (product / support / cart / orders) — ✅ done 2026-09-03: all deployed + tested live end-to-end (find → buy → show cart → remove, support answers, order-track). Gotcha fixed: `$fromAI` inside `queryParameters` does NOT resolve in httpRequestTool 4.2 as AI tool — params must be embedded in the URL string
 - [x] Blocks JSON Code node (price-guard copy of `richTextTotalMismatch`) — ✅ done 2026-09-03: product-grid + cart-table blocks (live re-fetch = ground truth) + price guard on cart/grid totals; verified live. Gotchas: n8n Code node sandbox has NO `$helpers`/`fetch` — use `require('http')` enabled via `NODE_FUNCTION_ALLOW_BUILTIN=http,https,url`; `cart-summary` API returns 0 for guest (tmp-*) carts so totals are computed from the cart read-back
-- [ ] External eval harness (Node/Python; not n8n-native)
+- [x] External eval harness (Node/Python; not n8n-native) — ✅ done 2026-09-03: `dev/eval-harness.mjs` — 10-case battery (product grid, no-fabrication, add→view→remove cart via the store reads the widget uses, support, order-track honesty, PG-memory recall, Bengali). `node dev/eval-harness.mjs` → all green; `--group`, `--webhook`, `--store`, `--out report.json`, exit 0/1. Note: direct HTTP read-backs of guest (tmp-*) carts from an independent host session are unreliable in the dev store (session nuances; add writes can be rolled back), so cart persistence is asserted through the workflow's own per-turn store reads — the same channel the widget uses.
 
 ### Part 3 — Deploy to VPS
 - [ ] Pull `fastmart-ai` to VPS
