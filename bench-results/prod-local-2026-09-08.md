@@ -82,6 +82,28 @@ Projections at the paid model rate:
 
 An average shopping conversation (say 5 turns) ≈ **2 US cents**. Real-world cost will likely be lower because many conversations are mostly cheap greetings and simple questions.
 
+### Cost in business terms
+
+Measured average: **$0.004 per reply** — so **$1 handles about 250 replies**, and about **50 complete shopper conversations**.
+
+| What a customer does | Cost per reply | $1 buys about |
+|---|---|---|
+| Small talk / "hi" | ~$0.0014 | ~700 replies |
+| Product question ("find me face serums") | ~$0.006 | ~165 replies |
+| Cart action (add / view / remove) | ~$0.006 | ~165 actions |
+| Support question (returns / delivery) | ~$0.0035 | ~285 replies |
+| **Any reply, on average** | **~$0.004** | **~250 replies** |
+
+A full shopping journey (recommend → add to cart → view cart → a follow-up) is ~4–5 replies ≈ **$0.02**, roughly **৳2.5**.
+
+| Monthly chats | Est. cost / month |
+|---|---|
+| 1,000 | ~$4 (~৳520) |
+| 5,000 | ~$20 (~৳2,600) |
+| 10,000 | ~$40 (~৳5,200) |
+
+In other words: a $100/month budget covers ~25,000 replies — roughly **5,000 full shopper conversations**.
+
 ---
 
 ## What this means for go-live
