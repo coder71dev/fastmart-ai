@@ -1,0 +1,250 @@
+{
+  "session": "bmtslbmcv",
+  "at": "2026-09-08T11:36:23.291Z",
+  "webhook": "http://localhost:5678/webhook/spike/agent-chat",
+  "store": "http://fastmart-pro.test",
+  "dbCostDecode": "on (n8n postgres)",
+  "priceBasis": "model gemini-3.7-flash; rates paid list in=$0.75 out=$3.75 per 1M (edit flags if changed)",
+  "priceInPerM": 0.75,
+  "priceOutPerM": 3.75,
+  "timeoutMs": 150000,
+  "monthlyChats": 0,
+  "totals": {
+    "runs": 48,
+    "timeouts": 0,
+    "httpErrs": 0
+  },
+  "latency": [
+    {
+      "seq": "greeting",
+      "samples": 3,
+      "ok": 3,
+      "latencyMs": {
+        "n": 3,
+        "mean": 1582,
+        "p50": 1542,
+        "p90": 1758,
+        "max": 1758,
+        "min": 1445
+      },
+      "avgTokensPerTurn": {
+        "in": 1697,
+        "out": 32
+      },
+      "avgCostPerTurn": 0.00139125
+    },
+    {
+      "seq": "product-search",
+      "samples": 3,
+      "ok": 3,
+      "latencyMs": {
+        "n": 3,
+        "mean": 7301,
+        "p50": 7293,
+        "p90": 7371,
+        "max": 7371,
+        "min": 7240
+      },
+      "avgTokensPerTurn": {
+        "in": 7050,
+        "out": 225
+      },
+      "avgCostPerTurn": 0.00613275
+    },
+    {
+      "seq": "support-policy",
+      "samples": 3,
+      "ok": 3,
+      "latencyMs": {
+        "n": 3,
+        "mean": 5131,
+        "p50": 5061,
+        "p90": 5331,
+        "max": 5331,
+        "min": 5002
+      },
+      "avgTokensPerTurn": {
+        "in": 4012,
+        "out": 143
+      },
+      "avgCostPerTurn": 0.003544
+    },
+    {
+      "seq": "order-track",
+      "samples": 3,
+      "ok": 3,
+      "latencyMs": {
+        "n": 3,
+        "mean": 5739,
+        "p50": 5831,
+        "p90": 5869,
+        "max": 5869,
+        "min": 5516
+      },
+      "avgTokensPerTurn": {
+        "in": 4787,
+        "out": 155
+      },
+      "avgCostPerTurn": 0.00417
+    },
+    {
+      "seq": "bengali",
+      "samples": 3,
+      "ok": 3,
+      "latencyMs": {
+        "n": 3,
+        "mean": 5872,
+        "p50": 5669,
+        "p90": 6322,
+        "max": 6322,
+        "min": 5624
+      },
+      "avgTokensPerTurn": {
+        "in": 4222,
+        "out": 304
+      },
+      "avgCostPerTurn": 0.00430525
+    },
+    {
+      "seq": "cart",
+      "samples": 9,
+      "ok": 9,
+      "latencyMs": {
+        "n": 9,
+        "mean": 7873,
+        "p50": 7666,
+        "p90": 11848,
+        "max": 11848,
+        "min": 6005
+      },
+      "avgTokensPerTurn": {
+        "in": 7034,
+        "out": 178
+      },
+      "avgCostPerTurn": 0.0059422500000000005
+    },
+    {
+      "seq": "memory",
+      "samples": 6,
+      "ok": 6,
+      "latencyMs": {
+        "n": 6,
+        "mean": 1788,
+        "p50": 1896,
+        "p90": 2088,
+        "max": 2088,
+        "min": 1521
+      },
+      "avgTokensPerTurn": {
+        "in": 1867,
+        "out": 55
+      },
+      "avgCostPerTurn": 0.001605875
+    }
+  ],
+  "latencyAllOkMs": {
+    "n": 30,
+    "mean": 5282,
+    "p50": 5831,
+    "p90": 8478,
+    "max": 11848,
+    "min": 1445
+  },
+  "ramp": [
+    {
+      "level": 1,
+      "ok": 1,
+      "fail": 0,
+      "wallMs": 7241,
+      "lat": {
+        "n": 1,
+        "mean": 7241,
+        "p50": 7241,
+        "p90": 7241,
+        "max": 7241,
+        "min": 7241
+      },
+      "tokens": {
+        "in": 6848,
+        "out": 222,
+        "total": 7070
+      },
+      "cost": 0.0059685,
+      "costPerOk": 0.0059685
+    },
+    {
+      "level": 2,
+      "ok": 2,
+      "fail": 0,
+      "wallMs": 5395,
+      "lat": {
+        "n": 2,
+        "mean": 5202,
+        "p50": 5395,
+        "p90": 5395,
+        "max": 5395,
+        "min": 5009
+      },
+      "tokens": {
+        "in": 7701,
+        "out": 262,
+        "total": 7963
+      },
+      "cost": 0.00675825,
+      "costPerOk": 0.003379125
+    },
+    {
+      "level": 5,
+      "ok": 5,
+      "fail": 0,
+      "wallMs": 8915,
+      "lat": {
+        "n": 5,
+        "mean": 6191,
+        "p50": 6407,
+        "p90": 8915,
+        "max": 8915,
+        "min": 2016
+      },
+      "tokens": {
+        "in": 24264,
+        "out": 750,
+        "total": 25014
+      },
+      "cost": 0.021010499999999998,
+      "costPerOk": 0.004202099999999999
+    },
+    {
+      "level": 10,
+      "ok": 10,
+      "fail": 0,
+      "wallMs": 10129,
+      "lat": {
+        "n": 10,
+        "mean": 6589,
+        "p50": 6794,
+        "p90": 10129,
+        "max": 10129,
+        "min": 2729
+      },
+      "tokens": {
+        "in": 47213,
+        "out": 1382,
+        "total": 48595
+      },
+      "cost": 0.040592249999999996,
+      "costPerOk": 0.004059225
+    }
+  ],
+  "cost": {
+    "latencyTotal": 0.12174525000000003,
+    "rampTotal": 0.07432949999999999,
+    "latencyPlusRamp": 0.19607475000000002
+  },
+  "projectionMonthly": null,
+  "recommendation": [
+    "worst p90 = cart at 11848ms (target <~15000ms for a chat turn)",
+    "clean through concurrency 10 (median 6794ms)",
+    "production knobs if load exceeds the clean level: raise N8N_CONCURRENCY_PRODUCTION_LIMIT in docker-compose, and confirm the Gemini key tier quota (paid > free)."
+  ]
+}

@@ -50,6 +50,7 @@ First launch: complete the owner-account signup in the browser (n8n user managem
 | `dev/n8n-admin.mjs` | n8n REST admin helper (list/get/create/update/activate/execs) |
 | `dev/prompts.js` | All system prompts + tool descriptions (single source) |
 | `dev/eval-harness.mjs` | External eval battery — 10 cases, grades real behavior |
+| `dev/prod-bench.mjs` | Production-readiness benchmark — latency/turn, concurrency ramp, cost/turn |
 | `wf4-agent-chat.json` / `wf5-test-bucket.json` | Spike-era workflow snapshots (superseded by `dev/build-*`) |
 | `scratchpad-verify.mjs` | Quick webhook smoke test |
 
@@ -79,6 +80,23 @@ node dev/deploy.mjs dev/out/productDiscovery.json dev/out/supportSpecialist.json
 # 3. Run the eval battery (10 cases, ~3 min, exit 0 = green):
 node dev/eval-harness.mjs                 # or --group cart / --out report.json
 ```
+
+## Production benchmark
+
+`dev/prod-bench.mjs` measures how `agent-chat` will behave in production — per-turn latency, how many concurrent chats it survives, and token cost per full turn (from n8n's own Postgres metrics, so it includes the child specialist executions, not just the orchestrator).
+
+```bash
+# Local baseline (latency + ramp 1,2,5,10, ~6 min):
+node dev/prod-bench.mjs --out bench-local.json
+
+# VPS at go-live — run ON the VPS host so cost decoding reads the VPS n8n DB:
+node dev/prod-bench.mjs --webhook https://ai.your-domain.com/webhook/spike/agent-chat \
+  --store https://your-store.com --force-db --out bench-vps.json
+```
+
+- Cost decode auto-turns off unless the webhook is `localhost` **or** `--force-db` is set (it reads the `fastmart-n8n-postgres` container). Latency/load still report without it.
+- Model price basis sits at the top of the file (`--price-in/--price-out` to override; default is the paid list rate for `gemini-3.7-flash`). Measured baseline 2026-09-08 (local, dev store): all-turn median ~5.8s / p90 ~8.5s, clean through 10 concurrent chats, ~$0.004 per full turn.
+- Cart scenarios write real `tmp-bench-*` guest carts then remove them, like eval-harness. Point it at a **live** store only when you accept that (or skip cart via a short run — see `--phase`).
 
 ## Store access (HTTP API only)
 

@@ -113,6 +113,9 @@ node dev/eval-harness.mjs --webhook https://ai.perfectobd.com/webhook/spike/agen
 ```
 
 - [ ] Eval green (10/10) against the **live store**.
+- [ ] **Prod bench** (optional but recommended): run on the VPS so cost decode reads its n8n DB:
+      `node dev/prod-bench.mjs --webhook https://ai.your-domain.com/webhook/spike/agent-chat --store <live> --force-db --out bench-vps.json`
+      Compare against the local baseline (~5.8s median turn, clean to 10 concurrent) — real store + HTTPS + network distance will move these numbers.
 - [ ] One real browser session: search → product cards render; add → cart table renders with true total; remove → empty.
 - [ ] `STORE_BASE_URL` set to live store; no references to `fastmart-pro.test` anywhere (`grep -r fastmart-pro` clean).
 - [ ] n8n executions list shows all `success` for the above.
