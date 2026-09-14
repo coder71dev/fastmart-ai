@@ -1,0 +1,7 @@
+# SearXNG configuration for n8n Assistant web search.
+# The stock image serves HTML only; n8n's web search needs the JSON API.
+use_default_settings: true
+search:
+  formats:
+    - html
+    - json

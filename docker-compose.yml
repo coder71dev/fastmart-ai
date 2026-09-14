@@ -23,6 +23,23 @@ services:
       - TZ=${TZ:-Asia/Dhaka}
       - STORE_BASE_URL=${STORE_BASE_URL:-https://example.com}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      # ===== n8n Assistant (instance-ai module) =====
+      # Model: any OpenAI-compatible endpoint. Defaults to Gemini's OpenAI-compatible API.
+      - N8N_ENABLED_MODULES=${N8N_ENABLED_MODULES:-instance-ai}
+      - N8N_INSTANCE_AI_MODEL=${N8N_INSTANCE_AI_MODEL:-gemini-3.7-flash}
+      - N8N_INSTANCE_AI_MODEL_API_KEY=${N8N_INSTANCE_AI_MODEL_API_KEY:-}
+      # Empty = provider's own address (OpenRouter is built in). Only point this
+      # at gemini-sig-proxy when the model is Gemini 3 (see gemini-sig-proxy.mjs).
+      - N8N_INSTANCE_AI_MODEL_URL=${N8N_INSTANCE_AI_MODEL_URL:-}
+      # Sandbox (self-hosted n8n-sandbox) — required for n8n Assistant.
+      - N8N_INSTANCE_AI_SANDBOX_ENABLED=true
+      - N8N_INSTANCE_AI_SANDBOX_PROVIDER=n8n-sandbox
+      - N8N_INSTANCE_AI_SANDBOX_IMAGE=${N8N_INSTANCE_AI_SANDBOX_IMAGE:-ghcr.io/n8n-io/n8n-sandbox-service-sandbox:latest}
+      - N8N_INSTANCE_AI_SANDBOX_API_URL=http://sandbox-api:8080
+      - N8N_SANDBOX_SERVICE_URL=http://sandbox-api:8080
+      - N8N_SANDBOX_SERVICE_API_KEY=${SANDBOX_API_KEYS:-}
+      # Web search (bundled SearXNG)
+      - N8N_INSTANCE_AI_SEARXNG_URL=http://searxng:8080
     ports:
       - "${N8N_PORT:-5678}:5678"
     extra_hosts:
@@ -32,6 +49,8 @@ services:
       - n8n_data:/home/node/.n8n
     depends_on:
       postgres:
+        condition: service_healthy
+      sandbox-api:
         condition: service_healthy
     networks:
       - fastmart
@@ -69,10 +88,122 @@ services:
     networks:
       - fastmart
 
+  # ===== n8n Assistant sandbox (self-hosted, "Setup 2") =====
+  # Generates the mTLS certs the sandbox-api and runner need, then exits.
+  sandbox-certs:
+    image: ghcr.io/n8n-io/n8n-sandbox-service-api:1.2.0
+    container_name: fastmart-sandbox-certs
+    user: '0:0'
+    entrypoint: ['sh', '-c']
+    command:
+      - >
+        bootstrap-mtls.sh --out-dir /tls --api-san sandbox-api
+        --control-san-prefix sandbox-runner --world-readable &&
+        chown -R sandbox-api:sandbox-api /tls/api && chmod -R a+rX /tls
+    environment:
+      NUM_RUNNERS: '1'
+    volumes:
+      - sandbox-tls:/tls
+    networks:
+      - fastmart
+
+  # Control plane n8n talks to when n8n Assistant runs code. Internal only.
+  sandbox-api:
+    image: ghcr.io/n8n-io/n8n-sandbox-service-api:1.2.0
+    container_name: fastmart-sandbox-api
+    restart: unless-stopped
+    depends_on:
+      sandbox-certs:
+        condition: service_completed_successfully
+    environment:
+      # Only the secrets the sandbox needs (never env_file: .env — keeps the
+      # model key, Postgres password and n8n encryption key out of this container).
+      - SANDBOX_API_KEYS=${SANDBOX_API_KEYS}
+      - SANDBOX_API_RUNNER_REGISTRATION_TOKEN=${SANDBOX_API_RUNNER_REGISTRATION_TOKEN}
+      - SANDBOX_API_RUNNER_API_KEY=${SANDBOX_API_RUNNER_API_KEY}
+      - SANDBOX_API_GRPC_TLS_CERT_FILE=/tls/api/grpc-server.crt
+      - SANDBOX_API_GRPC_TLS_KEY_FILE=/tls/api/grpc-server.key
+      - SANDBOX_API_GRPC_TLS_CLIENT_CA_FILE=/tls/api/ca.crt
+      - SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_CA_FILE=/tls/api/ca.crt
+      - SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_CERT_FILE=/tls/api/control-grpc-api-client.crt
+      - SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_KEY_FILE=/tls/api/control-grpc-api-client.key
+      - SANDBOX_API_RUNNER_CONTROL_GRPC_TLS_SERVER_NAME=sandbox-runner-1
+    volumes:
+      - sandbox-tls:/tls:ro
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/healthz']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - fastmart
+    # Never publish 8080/9090 to the host. n8n reaches this by service name.
+
+  # Privileged Docker-in-Docker worker that creates/runs the actual sandboxes.
+  # Treat as root on the host — never publish its ports.
+  sandbox-runner-1:
+    image: ghcr.io/n8n-io/n8n-sandbox-service-runner-dind:1.2.0
+    container_name: fastmart-sandbox-runner-1
+    restart: unless-stopped
+    privileged: true
+    depends_on:
+      sandbox-api:
+        condition: service_healthy
+    environment:
+      - SANDBOX_RUNNER_API_KEYS=${SANDBOX_API_RUNNER_API_KEY}
+      - SANDBOX_RUNNER_REGISTRATION_TOKEN=${SANDBOX_API_RUNNER_REGISTRATION_TOKEN}
+      - SANDBOX_RUNNER_API_GRPC_ADDR=sandbox-api:9090
+      - SANDBOX_RUNNER_HTTP_BASE_URL=http://sandbox-runner-1:8080
+      - SANDBOX_RUNNER_CONTROL_GRPC_LISTEN_ADDR=:9091
+      - SANDBOX_RUNNER_CONTROL_GRPC_ADVERTISE_ADDR=sandbox-runner-1:9091
+      - SANDBOX_RUNNER_ID=runner-1
+      - SANDBOX_RUNNER_DOCKER_SANDBOX_IMAGE=${N8N_INSTANCE_AI_SANDBOX_IMAGE:-ghcr.io/n8n-io/n8n-sandbox-service-sandbox:latest}
+      - SANDBOX_RUNNER_REGISTRATION_GRPC_CA_FILE=/tls/runner/ca.crt
+      - SANDBOX_RUNNER_REGISTRATION_GRPC_CERT_FILE=/tls/runner/grpc-client.crt
+      - SANDBOX_RUNNER_REGISTRATION_GRPC_KEY_FILE=/tls/runner/grpc-client.key
+      - SANDBOX_RUNNER_REGISTRATION_GRPC_SERVER_NAME=sandbox-api
+      - SANDBOX_RUNNER_CONTROL_GRPC_TLS_CERT_FILE=/tls/runner/control-grpc-server.crt
+      - SANDBOX_RUNNER_CONTROL_GRPC_TLS_KEY_FILE=/tls/runner/control-grpc-server.key
+      - SANDBOX_RUNNER_CONTROL_GRPC_TLS_CLIENT_CA_FILE=/tls/runner/ca.crt
+    volumes:
+      - sandbox-tls:/tls:ro
+    networks:
+      - fastmart
+
+  # Bundled web search for n8n Assistant. Internal only.
+  searxng:
+    image: ghcr.io/searxng/searxng:latest
+    container_name: fastmart-searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - fastmart
+
+  # Fixes Gemini 3 multi-step tool calling for n8n Assistant: caches the
+  # thought_signature Gemini returns on each tool call and re-attaches it on the
+  # next request. Internal only.
+  gemini-sig-proxy:
+    image: node:22-alpine
+    container_name: fastmart-gemini-sig-proxy
+    restart: unless-stopped
+    command: ['node', '/app/gemini-sig-proxy.mjs']
+    environment:
+      - PORT=8017
+      - GEMINI_UPSTREAM=${GEMINI_UPSTREAM:-https://generativelanguage.googleapis.com/v1beta/openai}
+    volumes:
+      - ./gemini-sig-proxy.mjs:/app/gemini-sig-proxy.mjs:ro
+    networks:
+      - fastmart
+
 volumes:
   n8n_data:
   postgres_data:
   meili_data:
+  sandbox-tls:
 
 networks:
   fastmart:
