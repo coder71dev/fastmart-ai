@@ -1,13 +1,26 @@
+# Production stack. `docker compose up -d` is all it takes once .env is filled.
+#
+# Local development needs two extra things (the dev-only Meilisearch and the
+# fastmart-pro.test host mapping) — those live in docker-compose.dev.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   n8n:
     image: n8nio/n8n:2.37.6
     container_name: fastmart-n8n
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - N8N_HOST=${N8N_HOST:-localhost}
       - N8N_PORT=${N8N_PORT:-5678}
-      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
-      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-https}
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-true}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:-}
       - N8N_RUNNERS_ENABLED=false
@@ -40,11 +53,10 @@ services:
       - N8N_SANDBOX_SERVICE_API_KEY=${SANDBOX_API_KEYS:-}
       # Web search (bundled SearXNG)
       - N8N_INSTANCE_AI_SEARXNG_URL=http://searxng:8080
+    # Loopback only: the host reverse proxy (aaPanel's Nginx) reaches n8n here,
+    # the internet never does. Set N8N_BIND=0.0.0.0 to expose it directly.
     ports:
-      - "${N8N_PORT:-5678}:5678"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "fastmart-pro.test:host-gateway"
+      - "${N8N_BIND:-127.0.0.1}:${N8N_PORT:-5678}:5678"
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
@@ -59,6 +71,7 @@ services:
     image: postgres:16-alpine
     container_name: fastmart-n8n-postgres
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-fastmart_n8n}
       - POSTGRES_USER=${POSTGRES_USER:-n8n}
@@ -70,21 +83,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    networks:
-      - fastmart
-
-  meilisearch:
-    image: getmeili/meilisearch:v1.13
-    container_name: fastmart-meilisearch
-    restart: unless-stopped
-    environment:
-      - MEILI_NO_ANALYTICS=true
-      - MEILI_ENV=development
-      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-}
-    ports:
-      - "7700:7700"
-    volumes:
-      - meili_data:/meili_data
     networks:
       - fastmart
 
@@ -112,6 +110,7 @@ services:
     image: ghcr.io/n8n-io/n8n-sandbox-service-api:1.2.0
     container_name: fastmart-sandbox-api
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       sandbox-certs:
         condition: service_completed_successfully
@@ -146,6 +145,7 @@ services:
     image: ghcr.io/n8n-io/n8n-sandbox-service-runner-dind:1.2.0
     container_name: fastmart-sandbox-runner-1
     restart: unless-stopped
+    logging: *default-logging
     privileged: true
     depends_on:
       sandbox-api:
@@ -176,6 +176,7 @@ services:
     image: ghcr.io/searxng/searxng:latest
     container_name: fastmart-searxng
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - SEARXNG_SECRET=${SEARXNG_SECRET}
     volumes:
@@ -190,6 +191,7 @@ services:
     image: node:22-alpine
     container_name: fastmart-gemini-sig-proxy
     restart: unless-stopped
+    logging: *default-logging
     command: ['node', '/app/gemini-sig-proxy.mjs']
     environment:
       - PORT=8017
@@ -202,7 +204,6 @@ services:
 volumes:
   n8n_data:
   postgres_data:
-  meili_data:
   sandbox-tls:
 
 networks:

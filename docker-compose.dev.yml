@@ -1,0 +1,40 @@
+# Local-development overlay. NEVER use this on the VPS.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Adds the two things only a local machine needs:
+#   - Meilisearch, the search backend your *local* store (fastmart-pro.test) queries
+#   - host mappings so the n8n container can reach that store on the host
+#
+# Production (`docker compose up -d`) skips this file entirely — which also avoids
+# colliding with a Meilisearch already running on the VPS for the live store.
+
+services:
+  n8n:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "fastmart-pro.test:host-gateway"
+    # Local stack is plain HTTP on localhost, so opt out of the production
+    # defaults (https / secure cookies) that the base file sets.
+    environment:
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=false
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    container_name: fastmart-meilisearch
+    restart: unless-stopped
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-}
+    # Loopback so the dev index is not exposed on the LAN.
+    ports:
+      - "127.0.0.1:${MEILI_PORT:-7700}:7700"
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - fastmart
+
+volumes:
+  meili_data:
