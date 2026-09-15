@@ -13,9 +13,44 @@ This is a **separate app** from `biz-buddy`. It does not share biz-buddy's Postg
 ```bash
 git clone <this-repo-url> /www/wwwroot/ai.perfectobd.com
 cd /www/wwwroot/ai.perfectobd.com
-cp .env.example .env      # fill every REQUIRED value (the file documents each one)
+cp .env.example .env      # then fill the values in the table below
 docker compose up -d
 ```
+
+**Filling `.env`.** Every variable is documented in the file itself; these are the ones you must set before `up`:
+
+| Var | Set to |
+|---|---|
+| `N8N_HOST` | `ai.perfectobd.com` |
+| `STORE_BASE_URL` | `https://perfectobd.com` |
+| `POSTGRES_PASSWORD` | any real password |
+| `N8N_ENCRYPTION_KEY` | ⚠ **the exact value from your existing instance's `.env`** — a fresh one here means step 3's restore cannot decrypt your credentials |
+| `N8N_USER_MANAGEMENT_JWT_SECRET` | `openssl rand -hex 32` |
+| `SANDBOX_API_KEYS` | `openssl rand -hex 32` |
+| `SANDBOX_API_RUNNER_REGISTRATION_TOKEN` | `openssl rand -hex 32` |
+| `SANDBOX_API_RUNNER_API_KEY` | `openssl rand -hex 32` |
+| `SEARXNG_SECRET` | `openssl rand -hex 32` |
+| `N8N_INSTANCE_AI_MODEL_API_KEY` | your Google AI Studio key (n8n Assistant only) |
+
+Generate every random in one go:
+
+```bash
+for v in N8N_USER_MANAGEMENT_JWT_SECRET SANDBOX_API_KEYS \
+         SANDBOX_API_RUNNER_REGISTRATION_TOKEN SANDBOX_API_RUNNER_API_KEY \
+         SEARXNG_SECRET POSTGRES_PASSWORD; do
+  sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" .env
+done
+```
+
+Leave the rest as the template has it — `N8N_PROTOCOL=https`, `N8N_SECURE_COOKIE=true`, `N8N_BIND=127.0.0.1`, `N8N_ENABLED_MODULES` and the two timezones are already correct for production.
+
+Check nothing required is still blank — any line this prints is unfilled:
+
+```bash
+grep -nE '^(N8N_ENCRYPTION_KEY|N8N_USER_MANAGEMENT_JWT_SECRET|SANDBOX_API_KEYS|SANDBOX_API_RUNNER_REGISTRATION_TOKEN|SANDBOX_API_RUNNER_API_KEY|SEARXNG_SECRET|POSTGRES_PASSWORD|N8N_HOST|STORE_BASE_URL)=$' .env
+```
+
+> Missing secrets do not fail loudly at `up`. A blank `SANDBOX_API_KEYS` breaks the sandbox healthcheck, and n8n waits on that dependency — so the symptom is n8n silently never starting.
 
 That gets the containers running. These five steps get it *serving*:
 
