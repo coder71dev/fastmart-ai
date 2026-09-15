@@ -23,8 +23,8 @@ docker compose up -d
 |---|---|
 | `N8N_HOST` | `ai.perfectobd.com` |
 | `STORE_BASE_URL` | `https://perfectobd.com` |
-| `POSTGRES_PASSWORD` | any real password |
-| `N8N_ENCRYPTION_KEY` | ⚠ **the exact value from your existing instance's `.env`** — a fresh one here means step 3's restore cannot decrypt your credentials |
+| `POSTGRES_PASSWORD` | a **new** password for n8n's own database — nothing to match, so `openssl rand -hex 32` is ideal (the loop below fills it). Set it once; changing it later locks n8n out |
+| `N8N_ENCRYPTION_KEY` | ⚠ **copy, don't generate** — take the exact value from your existing instance's `.env` (your local `fastmart-ai/.env`). Step 3 restores a DB whose credentials are encrypted with that key, so a fresh value here makes them permanently unreadable. The fill loop deliberately skips this one |
 | `N8N_USER_MANAGEMENT_JWT_SECRET` | `openssl rand -hex 32` |
 | `SANDBOX_API_KEYS` | `openssl rand -hex 32` |
 | `SANDBOX_API_RUNNER_REGISTRATION_TOKEN` | `openssl rand -hex 32` |
@@ -41,6 +41,8 @@ for v in N8N_USER_MANAGEMENT_JWT_SECRET SANDBOX_API_KEYS \
   sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" .env
 done
 ```
+
+Run that **once, before the first `up`**. Do not re-run it against a live deployment: it regenerates every secret, which breaks the sandbox auth (`SANDBOX_API_KEYS`) and the database connection (`POSTGRES_PASSWORD`).
 
 Leave the rest as the template has it — `N8N_PROTOCOL=https`, `N8N_SECURE_COOKIE=true`, `N8N_BIND=127.0.0.1`, `N8N_ENABLED_MODULES` and the two timezones are already correct for production.
 
