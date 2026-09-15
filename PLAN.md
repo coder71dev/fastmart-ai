@@ -1,7 +1,7 @@
 # Plan — Perfecto AI Shopping Assistant on n8n
 
 **Status:** ✅ **Spike PASSED 2026-09-02.** Part 1: 5/7 gates green — Steps 1–5 & 7 done; Step 6 blocked on external creds/HTTPS (documented, revisit at Part 3). n8n brain + store HTTP API + guest cart + widget webhook contract all proven live against the local store. **Part 2 — Full build DONE 2026-09-03 (5/5): agent+memory, store tools, 4 specialists, blocks JSON + price-guard, external eval harness — all tested live end-to-end (10/10 eval green).**
-**Last updated:** 2026-09-03
+**Last updated:** 2026-09-15
 **Target:** Rebuild the Biz Buddy AI chat brain on **n8n**, as a standalone app at `D:\laragon\www\fastmart-ai`, targeting the **live Perfecto store** over **HTTP API**.
 
 ---
@@ -54,12 +54,12 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 | File | Purpose | Status |
 |---|---|---|
 | `PLAN.md` | This plan + progress tracking | ✅ In progress |
-| `docker-compose.yml` | Standalone n8n + Postgres | ✅ Done (verified; + Meilisearch 2026-09-03, products indexed) |
+| `docker-compose.yml` | Production stack: n8n + Postgres + n8n Assistant (sandbox/SearXNG/Gemini proxy). `docker compose up -d` after `.env` — no edits | ✅ Done (2026-09-15) |
+| `docker-compose.dev.yml` | Local-dev overlay: dev-only Meilisearch + `fastmart-pro.test` host mapping + plain HTTP | ✅ Done (2026-09-15) |
 | `.env.example` | Env template | ✅ Done |
 | `README.md` | Quick start | ✅ Done |
 | `spike-checklist.md` | 2-week de-risk spike | ✅ Done (4/7 green, 2 blocked, Step 5 near-done) |
 | `WIDGET-CONTRACT.md` | **Widget ⇄ n8n webhook contract** (final) | ✅ Done (2026-09-02) |
-| `DEPLOY-VPS.md` | **Part 3 runbook** (VPS, HTTPS, cutover, acceptance, backups) | ✅ Done (2026-09-03) |
 | `wf4-agent-chat.json` | **Production webhook workflow** (agent + guest cart + blocks JSON) | ✅ Done — ready to import |
 | `wf5-test-bucket.json` | Test-bucket helper workflow | ✅ Done — ready to import |
 | `scratchpad-verify.mjs` | End-to-end verifier for the imported webhook | ✅ Done |
@@ -93,7 +93,8 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 - [x] External eval harness (Node/Python; not n8n-native) — ✅ done 2026-09-03: `dev/eval-harness.mjs` — 10-case battery (product grid, no-fabrication, add→view→remove cart via the store reads the widget uses, support, order-track honesty, PG-memory recall, Bengali). `node dev/eval-harness.mjs` → all green; `--group`, `--webhook`, `--store`, `--out report.json`, exit 0/1. Note: an earlier "guest-cart read flake" theory was disproven 2026-09-03 — it was the lite model misreporting cart state; the store DB was consistent. Cart persistence is still asserted through the workflow's own per-turn store reads (the widget's channel).
 
 ### Part 3 — Deploy to VPS
-**Runbook:** `DEPLOY-VPS.md` (written 2026-09-03 from the working local setup — preconditions, Caddy/HTTPS, firewall, workflow re-import or DB backup/restore, widget cutover + rollback, acceptance = eval battery 10/10 against the live store, backups, go-live watch). Tick steps there as you go.
+**How-to:** `README.md` → **Deploy (production)** — clone, `.env`, `docker compose up -d`, then site + TLS, reverse proxy, workflow migration, widget cutover, verification and backups. Tick the items below as you go.
+- [x] Store host no longer hardcoded — `STORE` in `dev/prompts.js` reads `STORE_BASE_URL` (build-time); the `search-products` tool in `dev/build-workflows.mjs` fixed to use it like the other 6 tools (2026-09-15). Workflows are now built per environment.
 - [ ] Pull `fastmart-ai` to VPS
 - [ ] Reverse proxy (Caddy/nginx) behind same domain/subdomain with **HTTPS** (required for WhatsApp/Messenger webhooks)
 - [ ] Firewall n8n; back up n8n's Postgres volume

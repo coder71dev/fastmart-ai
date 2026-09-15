@@ -2,7 +2,9 @@
 // Sources (biz-buddy): app/Ai/Agents/{ShoppingAssistant,ProductDiscoveryAgent,SupportAgent,CartAgent,OrderManagementAgent}.php
 // Adapted: tool names = our n8n tools; no RenderBlocksTool/CancelOrderTool; block markers added at M5.
 
-export const STORE = 'http://fastmart-pro.test';
+// Baked into httpRequestTool URLs at build time (tools cannot read $env — see
+// spike-checklist.md). Override for VPS builds: STORE_BASE_URL=... node dev/build-workflows.mjs
+export const STORE = (process.env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\/+$/, '');
 
 // ---------------------------------------------------------------------------
 // Tool descriptions (what the orchestrator sees) — biz-buddy description()
