@@ -140,9 +140,14 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 Your workflows live in the `n8n_data` volume.
 
+> **Symptom if you skip the overlay:** n8n starts fine and the editor works, but every store tool fails with a connection error the agent may paraphrase as a business answer (e.g. *"I couldn't find order TEST…"*). Check from inside the container:
+> `docker exec fastmart-n8n sh -c 'wget -qO- "http://fastmart-pro.test/api/v3/categories?parent_id=0" | head -c 80'`
+> JSON back = fine; `Connection refused` = you started without `-f docker-compose.dev.yml`, so `fastmart-pro.test` resolves to the container's own loopback and never reaches the store. Fix: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`.
+
 ## Spikes / widgets
 
 - **Widget contract:** see `WIDGET-CONTRACT.md` — the JSON contract the React widget uses to talk to the n8n webhook (full-response wait; the store's own guest cart keyed by the widget's `conversation_id`). **Browser-verified** 2026-09-02 from the real widget page (`http://localhost:8000` → n8n executions 84–87). The widget fork is in `biz-buddy` (`resources/js/components/storefront/storefront-widget.tsx`): it POSTs to the n8n webhook by default (`window.__PERFECTO_CHAT_MODE='laravel'` reverts to the old SSE brain).
+- **Standalone chat SPA (`perfecto-ai-demo.html`):** one self-contained file (Tailwind + Alpine via CDN, no build) that replaces the old simulated prototype — the brain is now the real n8n agent (`agent-chat (prod webhook)`, workflow id `oAlPFsGVYAlhZami`, webhook path `spike/agent-chat`). It POSTs `{message, conversation_id, profile}` to that webhook (full-response wait; `conversation_id`, the chat transcript **and** the panel's open state persist in `localStorage` under `perfecto_conversation_id` / `perfecto_chat_v1` / `perfecto_chat_open`, so a reload keeps the same agent memory, guest cart and visible history — only **↺ Reset session** starts a new one) and renders `reply` + all 9 `OutputBlock` types (including an `order-status` progress card that is built server-side **without** the customer's name/phone/email/address, so identity never reaches the browser). **The storefront is fully live too**: branding/contact come from the business-settings API, the nav is real categories, the grid is the real catalog (collections, category filter, sort, pagination), cards open a real product detail with variants, and the cart is the store's own guest cart (`tmp-*`), so qty/remove/add all hit the store, and the cart badge/panel is re-read from the store after every chat turn (the agent can change the cart without sending a `cart-table` block). If the store blocks the browser (CORS) it falls back to a small sample catalog so chat still works. Missing or broken images fall back to an inline placeholder. Every turn ends with an answer or an error bubble with **Try again** (a failed turn is never silently dropped — n8n's `{"message":"Error in workflow"}` body is valid JSON, so the SPA requires the contract shape before rendering). The 3-question skin quiz is sent as `profile`. Config via `window.__PERFECTO_N8N_CHAT_WEBHOOK` and `window.__PERFECTO_STORE_BASE`. Serve over **http://localhost** (not `file://` or `https`): `npx --yes http-server -p 8080 .` → `http://localhost:8080/perfecto-ai-demo.html`. This matters — a `file://` or `https` page is a secure context, so the browser **blocks** its `http://` calls as mixed content, and every store/cart request shows as blocked in the Network tab while the chat may still work. Open the DevTools console: the SPA logs the precise cause (`never left the browser` vs `HTTP nnn`) and the page origin. Hosting is not wired yet (planned: `/assistant/` on `ai.perfectobd.com`).
 - **Step 5 status:** workflow `agent-chat` is active in n8n; webhook URL is shown in the Webhook node's **Production URL** field (currently `http://localhost:5678/webhook/spike/agent-chat`). Run `node scratchpad-verify.mjs` to fire the test chats again. To apply a changed `wf4-agent-chat.json`: import/PATCH in the n8n editor, then re-activate so the published version runs it (see spike-checklist gotchas).
 - **Re-import after editing `wf4-agent-chat.json`:** open the workflow in n8n → menu (⋮) → Import from File → pick the JSON → Save → toggle **Active** off and on (this re-publishes; a bare Save only updates the draft).
 
@@ -169,6 +174,7 @@ Your workflows live in the `n8n_data` volume.
 | `dev/prod-bench.mjs` | Production-readiness benchmark — latency/turn, concurrency ramp, cost/turn |
 | `wf4-agent-chat.json` / `wf5-test-bucket.json` | Spike-era workflow snapshots (superseded by `dev/build-*`) |
 | `scratchpad-verify.mjs` | Quick webhook smoke test |
+| `perfecto-ai-demo.html` | **Standalone chat SPA** — one self-contained file (Tailwind + Alpine via CDN, no build). POSTs to the agent-chat webhook and reads the live store API. Serve over HTTP, not `file://` |
 
 ## Environment variables (key ones)
 
@@ -229,6 +235,23 @@ Workflows call the store at `STORE_BASE_URL`:
 - **Client:** n8n `HTTP Request` nodes / custom tools
 
 No store DB credentials are used in n8n. This keeps one consistent, portable path local → VPS. Meilisearch is the *store's* search backend, never called from n8n directly — that is why the production stack ships without one.
+
+**The SPA uses the same `STORE_BASE_URL` API surface, from the browser.** Verified endpoints:
+
+| Purpose | Call |
+|---|---|
+| Branding + contact | `GET /api/v3/business-settings?q=website_name,header_logo,footer_logo,system_logo_white,site_icon,contact_phone,contact_email,contact_address,topbar_banner,topbar_banner_link,site_url` |
+| Nav categories | `GET /api/v3/categories?parent_id=0` (+ `products_count`) |
+| Grid / search / filter / sort / page | `GET /api/v4/products?type=…&category_id=…&keyword=…&sort=…&limit=24&page=N` → `{data, meta:{total,last_page}}`. `type` = `newArrivals\|featured\|bestSeller\|todaysDeal\|discounted`; `sort` = `latest\|oldest\|price_low_high\|price_high_low\|rating\|popularity` |
+| Product detail | `GET /api/v3/products/{id}` (photos, description, tags) |
+| Variants | `GET /api/v4/products/variants?product_id={id}` |
+| Quiz options | `GET /api/v3/skin-concerns` |
+| Cart read | `POST /api/v3/carts/{user_id}` |
+| Cart add | `POST /api/v3/carts/add?user_id=&id=&quantity=&variant=` |
+| Cart qty | `POST /api/v3/carts/change-quantity` `{id,quantity,user_id}` |
+| Cart remove | `DELETE /api/v3/carts/{lineId}?user_id=` |
+
+Two gotchas this surfaced: the `is_guest_user` middleware derives `user_field` (`temp_user_id`) from a `tmp*` **`user_id`** param, so every cart call must carry `user_id`; and product image paths are **relative** (`uploads/all/x.jpg`) while business-settings `image_url` is absolute — the SPA absolutizes relative paths and falls back to an inline placeholder when an image is missing or 404s. Avoid `/api/v3/products/search` and `/api/v3/brands` — they currently 500 with a PHP deprecation dump (use `/api/v4/products?keyword=` instead).
 
 > **Guest cart:** Whether logged-out cart works depends on the store API auto-creating a guest user. This is verified in the spike (`spike-checklist.md`, Step 2). If it doesn't, a thin **guest-cart bridge** on the store is planned (store already has CSRF off + an `is_guest_user` middleware, so that stays small).
 
