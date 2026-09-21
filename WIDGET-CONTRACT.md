@@ -15,7 +15,7 @@ Content-Type: application/json
   - Local: `http://localhost:5678`
   - VPS (Part 3): `https://ai.your-domain.com` behind a Caddy/nginx reverse proxy.
 - **Always copy the exact URL from the Webhook node's "Production URL" field in the n8n editor.** n8n registers the path exactly as saved in the workflow (here: `spike/agent-chat`, no workflow-id prefix). If a future edit changes the path or adds a `webhookId`, n8n may register `{workflowId}/webhook/spike/agent-chat` instead — the node's Production URL field is the single source of truth.
-- **Verified live 2026-09-02** against workflow `agent-chat (prod webhook)` (owner id `oAlPFsGVYAlhZami` in the local instance).
+- **Verified live 2026-09-02** against workflow `agent-chat (prod webhook)` (workflow id `oAlPFsGVYAlhZami` in the local instance).
 
 ## Request body
 
@@ -41,7 +41,27 @@ Content-Type: application/json
 - **No token streaming, no inline approvals.** The widget waits for the full body (plain `response.json()`), shows a spinner meanwhile.
 - `reply` may be empty when `blocks` is non-empty (a blocks-only turn, e.g. cart table).
 - `blocks` types are the widget's existing `OutputBlock` union:
-  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table`.
+  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `order-status`.
+
+### `order-status` (order tracking)
+
+Emitted when the order specialist finds an order. **It carries no personal data** — the specialist strips identity before building it, so the customer's name, phone, email and address never leave the n8n host:
+
+```jsonc
+{ "type": "order-status", "order": {
+  "code": "TEST2026080810292989",
+  "placedAt": "08-08-2026",
+  "status": "pending",              // store delivery_status -> drives the progress stepper
+  "statusLabel": "Order Placed",
+  "paymentStatus": "unpaid", "paymentStatusLabel": "Unpaid", "paymentMethod": "Sslcommerz Payment",
+  "shippingType": "Home Delivery", "shippingMethod": "Pathao",
+  "eta": "1-2 business days",
+  "itemCount": 1, "subtotal": 1900, "shippingCost": 60, "discount": 0, "tax": 0, "total": 1960,
+  "items": [ { "name": "Anua Peach 77 Niacin Essence Toner", "variant": null, "quantity": 1, "price": 1900, "image": "uploads/all/1(31).jpg" } ]
+} }
+```
+
+The widget maps `status` onto a 5-step fulfilment flow (Order Placed → Confirmed → **Packaging** → Out for Delivery → Delivered; `cancelled`/`returned`/`failed` render as a terminal state). Keep that map in step with the store's own `delivery_status` values — they are the store's, not ours (`pending`, `confirmed`, `hold`, `packaging`, `picked_up`, `on_the_way`, `shipped`, `delivered` — confirmed against the `orders` table). The ETA line is hidden once the order is delivered or terminal.
 
 ## Guest cart plumbing (verified in Step 2)
 

@@ -221,7 +221,7 @@ function plainText(s) {
     .trim();
 }
 function stripFooter(s) {
-  return String(s ?? '').replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '').trim();
+  return String(s ?? '').replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '').replace(/META_ORDER_JSON:[^\\n]*\\n?/gi, '').trim();
 }
 function normalizeCurrency(s) {
   return String(s ?? '').replace(/(\\d[\\d,]*(?:\\.\\d{1,2})?)\\s*৳/g, '৳$1');
@@ -252,6 +252,32 @@ function firstJson(s) {
   const start = (i < 0 ? j : (j < 0 ? i : Math.min(i, j)));
   if (start < 0) return null;
   try { return JSON.parse(s.slice(start)); } catch { return null; }
+}
+// The order specialist's output arrives wrapped (observation is JSON text like
+// [{text:"...META_ORDER_JSON: {\\"code\\":...}"}]), so the META line's quotes are
+// escaped at the outer level. Dig through strings/arrays/{text,data,json,output}
+// until the plain text is reached, then parse the footer.
+function orderMetaFrom(v, depth) {
+  const d = depth || 0;
+  if (d > 6 || v == null) return null;
+  if (typeof v === 'string') {
+    const direct = v.match(/META_ORDER_JSON:\\s*(\\{[^\\n]*\\})/);
+    if (direct) { try { return JSON.parse(direct[1]); } catch (e) {} }
+    const parsed = firstJson(v);
+    if (parsed !== null && typeof parsed === 'object') return orderMetaFrom(parsed, d + 1);
+    return null;
+  }
+  if (Array.isArray(v)) {
+    for (const x of v) { const r = orderMetaFrom(x, d + 1); if (r) return r; }
+    return null;
+  }
+  if (typeof v === 'object') {
+    if (typeof v.text === 'string') { const r = orderMetaFrom(v.text, d + 1); if (r) return r; }
+    for (const k of ['data', 'json', 'output']) {
+      if (v[k] !== undefined) { const r = orderMetaFrom(v[k], d + 1); if (r) return r; }
+    }
+  }
+  return null;
 }
 async function call(url, opts) {
   try {
@@ -302,6 +328,7 @@ let userId = null;
 try { userId = $('Prepare Input').first().json.userId; } catch {}
 const wantsGrid = /\\[BLOCK\\s+product-grid\\]/i.test(replyTxt);
 const wantsCart = /\\[BLOCK\\s+cart-table\\]/i.test(replyTxt);
+const wantsOrder = /\\[BLOCK\\s+order-status\\]/i.test(replyTxt);
 let ids = [];
 try {
   const m = replyTxt.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
@@ -316,7 +343,9 @@ try {
 // turn also warrants the cart table (its true total is re-read live below).
 let wantsGridObs = false;
 let wantsCartObs = false;
+let wantsOrderObs = false;
 let cartAddRan = false;
+let orderMeta = null;
 try {
   const steps = $input.first().json.intermediateSteps || [];
   for (const st of steps) {
@@ -329,6 +358,9 @@ try {
     if (!s) continue;
     if (/\\[BLOCK\\s+product-grid\\]/i.test(s)) wantsGridObs = true;
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
+    if (/\\[BLOCK\\s+order-status\\]/i.test(s)) wantsOrderObs = true;
+    // The order specialist emits META_ORDER_JSON carrying the already-PII-free order payload.
+    if (!orderMeta) orderMeta = orderMetaFrom(o);
     if (!ids.length) {
       try {
         const parsed = typeof o === 'string' ? JSON.parse(o) : o;
@@ -350,7 +382,9 @@ try {
 } catch {}
 const doGrid = wantsGrid || wantsGridObs;
 const doCart = wantsCart || wantsCartObs || cartAddRan;
+const doOrder = wantsOrder || wantsOrderObs || !!orderMeta;
 const blocks = [];
+if (doOrder && orderMeta) blocks.push({ type: 'order-status', order: orderMeta });
 if (doGrid && ids.length) {
   try {
     const cards = [];
