@@ -12,7 +12,11 @@ x-logging: &default-logging
 
 services:
   n8n:
-    image: n8nio/n8n:2.37.6
+    # Floating "stable" channel. Tracks n8n's supported release — currently
+    # 2.40.5, and it moves to 3.0.x on its own once that ships. Pin a version
+    # here (e.g. :v3-rc-20260921) if a surprise major bump is unacceptable; see
+    # README "Upgrading n8n" for the v3 breaking-change checklist.
+    image: n8nio/n8n:latest
     container_name: fastmart-n8n
     restart: unless-stopped
     logging: *default-logging
@@ -23,9 +27,12 @@ services:
       - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-true}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:-}
-      - N8N_RUNNERS_ENABLED=false
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - NODE_FUNCTION_ALLOW_BUILTIN=http,https,util,path,url,zlib,crypto,stream,events
+      # The blocks/price-guard Code node re-reads up to 5 product details plus the
+      # cart over HTTP, each with a 20s timeout — a slow store can pass one minute.
+      # n8n 3 drops this default from 300s to 60s, so pin it to keep the ceiling.
+      - N8N_RUNNERS_TASK_TIMEOUT=300
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-fastmart_n8n}
       - DB_POSTGRESDB_HOST=postgres
