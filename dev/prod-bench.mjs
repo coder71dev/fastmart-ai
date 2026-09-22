@@ -37,7 +37,7 @@ const SESSION = 'b' + Date.now().toString(36);
 // ---- model price basis (paid list rates; override with --price-in/--price-out) --
 const PRICE_IN = Number(ARGS['price-in'] ?? 0.75);    // USD per 1M input tokens
 const PRICE_OUT = Number(ARGS['price-out'] ?? 3.75);   // USD per 1M output tokens
-const MODEL_NOTE = 'model gemini-3.7-flash; rates paid list in=$0.75 out=$3.75 per 1M (edit flags if changed)';
+const MODEL_NOTE = 'rates still default to the old gemini-3.7-flash list price (in=$0.75 out=$3.75 per 1M); the workflows now run deepseek/deepseek-v4.1-flash, so pass --price-in/--price-out or the cost column is wrong';
 
 // ---------------------------------------------------------------------------
 const localDb = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(WEBHOOK);
@@ -243,7 +243,7 @@ function recommend(perSeq, rampRows) {
   const maxClean = rampRows.filter((r) => r.fail === 0).at(-1);
   if (maxClean) notes.push(`clean through concurrency ${maxClean.level} (median ${maxClean.lat.p50}ms)`);
   else if (rampRows.length) notes.push('no concurrency level completed cleanly — check model quota / n8n concurrency limit');
-  notes.push('production knobs if load exceeds the clean level: raise N8N_CONCURRENCY_PRODUCTION_LIMIT in docker-compose, and confirm the Gemini key tier quota (paid > free).');
+  notes.push('production knobs if load exceeds the clean level: raise N8N_CONCURRENCY_PRODUCTION_LIMIT in docker-compose, and check the Command Code key quota/rate limit (the workflows and the Assistant share one key).');
   return notes;
 }
 

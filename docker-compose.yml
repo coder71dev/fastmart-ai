@@ -37,13 +37,15 @@ services:
       - STORE_BASE_URL=${STORE_BASE_URL:-https://example.com}
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       # ===== n8n Assistant (instance-ai module) =====
-      # Model: any OpenAI-compatible endpoint. Defaults to Gemini's OpenAI-compatible API.
+      # Model: any OpenAI-compatible endpoint. Defaults to Command Code's gateway.
+      # The "custom/" prefix is required: instance-ai reads the text before the
+      # first "/" as an n8n provider name, so a namespaced gateway id like
+      # "deepseek/deepseek-v4.1-flash" would be stripped to "deepseek-v4.1-flash".
       - N8N_ENABLED_MODULES=${N8N_ENABLED_MODULES:-instance-ai}
-      - N8N_INSTANCE_AI_MODEL=${N8N_INSTANCE_AI_MODEL:-gemini-3.7-flash}
+      - N8N_INSTANCE_AI_MODEL=${N8N_INSTANCE_AI_MODEL:-custom/deepseek/deepseek-v4.1-flash}
       - N8N_INSTANCE_AI_MODEL_API_KEY=${N8N_INSTANCE_AI_MODEL_API_KEY:-}
-      # Empty = provider's own address (OpenRouter is built in). Only point this
-      # at gemini-sig-proxy when the model is Gemini 3 (see gemini-sig-proxy.mjs).
-      - N8N_INSTANCE_AI_MODEL_URL=${N8N_INSTANCE_AI_MODEL_URL:-}
+      # Endpoint for the model above. Required for "custom/" (its baseURL).
+      - N8N_INSTANCE_AI_MODEL_URL=${N8N_INSTANCE_AI_MODEL_URL:-https://api.commandcode.ai/provider/v1}
       # Sandbox (self-hosted n8n-sandbox) — required for n8n Assistant.
       - N8N_INSTANCE_AI_SANDBOX_ENABLED=true
       - N8N_INSTANCE_AI_SANDBOX_PROVIDER=n8n-sandbox
