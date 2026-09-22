@@ -6,6 +6,9 @@ n8n_cookies.txt
 # Generated build output (regenerate with node dev/build-workflows.mjs + build-main.mjs)
 dev/out/
 
+# Generated token-cost report (regenerate with node dev/token-cost.mjs)
+token-cost.html
+
 # Tool junk
 .commandcode/
 

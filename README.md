@@ -174,6 +174,9 @@ Your workflows live in the `n8n_data` volume.
 | `dev/prompts.js` | All system prompts + tool descriptions (single source) |
 | `dev/eval-harness.mjs` | External eval battery — 10 cases, grades real behavior |
 | `dev/prod-bench.mjs` | Production-readiness benchmark — latency/turn, concurrency ramp, cost/turn |
+| `dev/build-collector.mjs` | Builds the **`token-usage collector`** workflow — reads n8n's own Postgres and writes one row per LLM call into the `token_usage` Data Table |
+| `dev/token-cost.mjs` | Renders the `token_usage` Data Table as `token-cost.html` (datatable + totals footer) |
+| `token-cost.html` | **Generated** token-cost datatable — re-run `dev/token-cost.mjs` to refresh |
 | `wf4-agent-chat.json` / `wf5-test-bucket.json` | Spike-era workflow snapshots (superseded by `dev/build-*`) |
 | `scratchpad-verify.mjs` | Quick webhook smoke test |
 | `perfecto-ai-demo.html` | **Standalone chat SPA** — one self-contained file (Tailwind + Alpine via CDN, no build). POSTs to the agent-chat webhook and reads the live store API. Serve over HTTP, not `file://` |
@@ -275,6 +278,61 @@ node dev/prod-bench.mjs --webhook https://ai.perfectobd.com/webhook/spike/agent-
 - Cost decode auto-turns off unless the webhook is `localhost` **or** `--force-db` is set (it reads the `fastmart-n8n-postgres` container). Latency/load still report without it.
 - Model price basis sits at the top of the file (`--price-in/--price-out` to override). ⚠ The built-in defaults are still the old `gemini-3.7-flash` list rate — the workflows now run `deepseek/deepseek-v4.1-flash`, so pass both flags (or update the constants) or the cost column is meaningless. The latency baseline below was also measured on Gemini and has not been re-measured for the new model: measured 2026-09-08 (local, dev store) all-turn median ~5.8s / p90 ~8.5s, clean through 10 concurrent chats, ~$0.004 per full turn.
 - Cart scenarios write real `tmp-bench-*` guest carts then remove them, like eval-harness. Point it at a **live** store only when you accept that (or skip cart via a short run — see `--phase`).
+
+## Token usage & cost
+
+Every LLM call's real token usage is collected into the **`token_usage` Data Table** (one row per call), which `dev/token-cost.mjs` renders as `token-cost.html` — a single-file datatable with a totals footer.
+
+```bash
+node dev/build-collector.mjs && node dev/deploy.mjs dev/out/tokenCollector.json   # build + activate (once)
+curl -X POST http://localhost:5678/webhook/metrics/collect-tokens                 # ingest now
+node dev/token-cost.mjs                                                           # refresh token-cost.html
+```
+
+The collector **runs every 5 minutes** and on demand via that webhook, so a fresh turn can take up to ~5 minutes to appear. `{"ingested":N}` means N call-rows were written; `{"ingested":0,"note":"nothing new to ingest"}` is a normal idle run. Runs are visible in n8n's executions list (success **and** failure), so a gap is diagnosable.
+
+**Why a collector and not a node in the agent graph.** n8n keeps per-call usage on the model node's `ai_languageModel` connection, but nothing *inside the run* can read it. Verified on n8n 2.40.5 with a throwaway probe workflow — from the node after the agent, every accessor fails:
+
+| Accessor | Result |
+|---|---|
+| `$('OpenAI Chat Model').first().json` | `No data found from 'main' input` |
+| `$('OpenAI Chat Model').all()` | `No data found from 'main' input` |
+| `$items('OpenAI Chat Model')` | `No data found from 'main' input` |
+| `$node['OpenAI Chat Model'].json` | `No data found from 'main' input` |
+| `$('AI Agent').first().json.tokenUsage` | `null` — the Agent emits only `output`, `intermediateSteps` |
+
+So the collector reads n8n's **own** Postgres (`execution_entity` + `execution_data`), decodes the flatted run data, and inserts the rows. Its cursor (last ingested execution id) lives in the workflow's static data. It needs a Postgres credential for the `fastmart_n8n` database — `n8n Postgres (metrics, read-only)`, id `aDuHo9mivsM8kd9Z`. That is n8n's own DB, **not** the store's.
+
+`token_usage` columns: `execution_id`, `parent_execution_id`, `conversation_id`, `workflow_name`, `run_mode`, `node_name`, `call_index`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `started_at`. A specialist sub-execution has no conversation of its own, so it carries `parent_execution_id` and `dev/token-cost.mjs` resolves it to the parent's conversation before rendering.
+
+> ⚠ **`POST {"full": true}` re-ingests from zero and does not de-duplicate — it duplicates rows.** To rebuild the table, clear it first (n8n → Data Tables → `token_usage` → Clear), then clear the workflow's static data (or re-save the workflow), then send `{"full": true}`.
+>
+> The cursor advances when a batch is *decoded*, not when it is written, so if the insert itself fails that batch's rows are skipped for good — repair the same way.
+
+**Measuring what one webhook call costs** — clear the rows but **leave the cursor alone**, or the next run re-ingests the whole history and refills the table. Single-line, so it survives paste:
+
+```bash
+docker exec fastmart-n8n-postgres psql -U n8n -d fastmart_n8n -c 'DELETE FROM "data_table_user_HMfSB3bn9yzerRbr"'
+```
+```bash
+curl -s -X POST http://localhost:5678/webhook/spike/agent-chat -H "Content-Type: application/json" -d "{\"message\":\"find me face serums\",\"conversation_id\":\"tmp-costcheck-1\"}"
+```
+```bash
+curl -s -X POST http://localhost:5678/webhook/metrics/collect-tokens
+```
+```bash
+node dev/token-cost.mjs
+```
+
+Clear the rows, make one call, ingest it (or wait up to 5 min for the schedule) — with the table otherwise empty, its footer total **is** that call's cost. Expect ~3k tokens for a greeting, ~6k for a normal turn, and ~28k for a multi-step cart flow: one turn is several LLM calls (orchestrator + each specialist), which is exactly what the per-call rows make visible. Only *workflow* calls are counted — the n8n Assistant's own model usage is not recorded here.
+
+Three gotchas found the hard way while building this — they cost real debugging time, so:
+
+- **`saveDataSuccessExecution: 'none'` is a trap here.** It was set to avoid re-storing the run data the collector reads. But n8n never finalises an execution it isn't saving, so every run sat in `running` with `finished=false` **forever**, and every *working* run was invisible — a healthy collector looked identical to a dead one. It is now `'all'`.
+- **n8n merges workflow settings on update.** Deleting a key from `settings` in `dev/build-collector.mjs` and redeploying does **not** clear it in n8n — the built JSON omitted `saveDataSuccessExecution` while the DB still reported `'none'` until it was set explicitly to `'all'`.
+- **A webhook with `responseMode: 'lastNode'` fails on an empty batch.** An idle run ended with zero items, so n8n threw *"No item to return was found"* (HTTP 500). The decoder now always emits one item, an `If` routes idle batches straight to a `Report` node, and the run reports `{"ingested":0}`.
+
+First full ingest, checked against an independent full-resolve decode of the same executions (2026-09-22): **0 mismatches** on execution count, call count and token totals (298 executions / 626 calls / 2,953,736 tokens at the time of the check). `dev/prod-bench.mjs` still computes its own cost column from a price constant; the Data Table is the token-accurate source.
 
 ## Store access (HTTP API only)
 

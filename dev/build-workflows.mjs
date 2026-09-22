@@ -129,7 +129,12 @@ return [{ json: { chatInput: String(q).trim() } }];`,
         formatJs ||
         `const out = $input.first().json.output;
 const raw = typeof out === 'string' ? out : (out?.output ?? JSON.stringify(out));
-const text = String(raw ?? '').replace(/<[^>]+>/g, '').trim();
+let text = String(raw ?? '').replace(/<[^>]+>/g, '').trim();
+// Never hand the orchestrator the agent's raw "Agent stopped due to max
+// iterations." — it used to be paraphrased into a vague apology for the
+// customer. Product discovery salvages a real answer instead; the others say so
+// plainly. (Same leak class, fixed in one place per specialist.)
+if (/max iterations/i.test(text)) text = 'I could not finish that just now — could you rephrase it or narrow it down a little?';
 return [{ json: { text } }];`,
     },
     name: 'Format Out',
@@ -236,6 +241,10 @@ function searchToolWorkflow() {
 
 const productDiscovery = specialistWorkflow('specialist-product-discovery', P.PRODUCT_DISCOVERY, {
   retry: true,
+  // returnIntermediateSteps is what lets Format Out salvage a real answer from
+  // the searches when the agent burns its iterations (see formatJs below).
+  // Read-only specialist, so there is no cart-safety reason to withhold steps.
+  returnSteps: true,
   tools: [
     {
       name: 'search_products',
@@ -263,14 +272,74 @@ const productDiscovery = specialistWorkflow('specialist-product-discovery', P.PR
       }),
     },
   ],
-  formatJs: `const out = $input.first().json.output;
+  formatJs: `const inp = $input.first().json;
+const out = inp.output;
 const raw = typeof out === 'string' ? out : (out?.output ?? JSON.stringify(out));
 let text = String(raw ?? '').replace(/<[^>]+>/g, '');
-const m = text.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
-let product_ids = [];
-if (m && m[1] && !/^none$/i.test(m[1].trim())) {
-  product_ids = m[1].split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite);
+
+function idsFrom(s) {
+  const m = String(s).match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
+  if (!m || !m[1] || /^none$/i.test(m[1].trim())) return [];
+  return [...new Set(m[1].split(',').map((x) => parseInt(x, 10)).filter(Number.isFinite))];
 }
+let product_ids = idsFrom(text);
+
+// When the agent runs out of iterations it returns the bare string
+// "Agent stopped due to max iterations." — no answer at all, though the searches
+// it did run are sitting in intermediateSteps. That string must never reach the
+// customer (the orchestrator used to paraphrase it as "the search didn't
+// complete"), and the turn must still be useful, so rebuild the reply from the
+// results already collected. This is deterministic — no model call, so it cannot
+// loop or fail the way the agent did.
+// Only replace the model's text when it produced NO answer at all. A reply that
+// simply omitted the META footer (e.g. "this comes in 15ml or 45ml — which one?")
+// is a real answer and must be left alone: overwriting it with a product list
+// would silently discard a clarifying question.
+const exhausted = /max iterations/i.test(text);
+if (exhausted) {
+  let budget = null;
+  try {
+    const task = String($('Sub Trigger').first().json.query ?? '');
+    const bm = task.match(/under\\s*(?:৳|BDT\\s*)?([\\d,]+)/i);
+    if (bm) { const n = parseInt(String(bm[1]).replace(/,/g, ''), 10); if (n > 0) budget = n; }
+  } catch (e) {}
+
+  const found = [];
+  const seen = {};
+  for (const st of (inp.intermediateSteps || [])) {
+    if (String((st && st.action && st.action.tool) || '') !== 'search_products') continue;
+    let obs = st && st.observation;
+    if (Array.isArray(obs)) obs = obs.map((x) => (x && x.text) || '').join('\\n');
+    else if (obs && typeof obs === 'object') obs = obs.text || '';
+    for (const line of String(obs || '').split('\\n')) {
+      const m = line.match(/^- id=(\\d+) \\| (.+?) \\| ৳([\\d,]+)[^|]*\\| ([^|]+)\\|/);
+      if (!m) continue;
+      const id = parseInt(m[1], 10);
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      if (!/in stock/i.test(m[4])) continue;
+      found.push({ id, name: m[2].trim(), price: parseInt(m[3].replace(/,/g, ''), 10) });
+    }
+  }
+  found.sort((a, b) => a.price - b.price);
+  const within = budget ? found.filter((p) => p.price <= budget) : found;
+  const picks = (within.length ? within : found).slice(0, 4);
+  if (picks.length) {
+    const head = within.length
+      ? 'Here are the best in-stock options I found for you:'
+      : 'Nothing in stock came in under ৳' + budget + ', but these are in stock:';
+    text = head + '\\n' + picks.map((p) => p.name + ' — ৳' + p.price.toLocaleString('en-US')).join('\\n')
+      + '\\nMETA_PRODUCT_IDS: ' + picks.map((p) => p.id).join(',')
+      + '\\n[BLOCK product-grid]';
+    product_ids = picks.map((p) => p.id);
+  } else {
+    // Nothing salvageable and no answer from the model — say so honestly.
+    text = "I couldn't find anything in stock for that just now. Try a different product name or category and I'll take another look."
+      + '\\nMETA_PRODUCT_IDS: none';
+    product_ids = [];
+  }
+}
+
 // KEEP the META_PRODUCT_IDS footer in text: the orchestrator parses product ids from it.
 // The main workflow Response node strips it before replying to the customer.
 text = text.replace(/\\\\n{2,}/g, '\\\\n').trim();
@@ -314,7 +383,11 @@ return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
   ],
   formatJs: `const out = $input.first().json.output;
 const raw = typeof out === 'string' ? out : (out?.output ?? JSON.stringify(out));
-const text = String(raw ?? '').replace(/<[^>]+>/g, '').replace(/\\n{2,}/g, '\\n').trim();
+let text = String(raw ?? '').replace(/<[^>]+>/g, '').replace(/\\n{2,}/g, '\\n').trim();
+// Same max-iterations leak class as the other specialists. A cart specialist that
+// ran out of turns may or may not have mutated the cart, so it must not guess
+// state either way — just say the action did not complete.
+if (/max iterations/i.test(text)) text = 'I could not finish that cart action just now — could you try once more?';
 return [{ json: { text } }];`,
 });
 
@@ -425,6 +498,9 @@ if (order) {
 }
 
 text = text.replace(/META_ORDER_JSON:[^\\n]*/gi, '').replace(/\\[BLOCK[^\\]]*\\]/gi, '').replace(/\\n{2,}/g, '\\n').trim();
+// Same max-iterations leak class as the other specialists: if the agent never got
+// a usable answer out, say so plainly instead of passing the raw technical string on.
+if (!meta && /max iterations/i.test(text)) text = 'I could not finish looking that order up just now — could you try again in a moment?';
 if (meta) text += '\\nMETA_ORDER_JSON: ' + JSON.stringify(meta) + '\\n[BLOCK order-status]';
 return [{ json: { text, has_order: !!meta } }];`;
 
