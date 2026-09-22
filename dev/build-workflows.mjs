@@ -3,27 +3,24 @@
 // Writes into dev/out/ ready for dev/deploy.mjs.
 import fs from 'node:fs';
 import * as P from './prompts.js';
+import { MODEL_NODE, modelNodeFields } from './model-config.mjs';
 
 const OUT = 'dev/out';
 fs.mkdirSync(OUT, { recursive: true });
 
-const GEMINI_CRED = { id: 'NZ6P1UaAuMYlAFa1', name: 'Gemini API Palm v3' };
-const MODEL = 'models/gemini-3.7-flash';
 const rand = () => Math.random().toString(36).slice(2, 8);
 
 const node = (o) => ({ id: o.id || rand(), disabled: false, ...o });
 const pos = (x, y) => [x, y];
 
-// ---- language model node (shared) -----------------------------------------
+// Sub-workflow id for the slim search tool (assigned by n8n on deploy). On a
+// fresh install: deploy dev/out/searchTool.json first, then rebuild with
+// SEARCH_TOOL_ID=<id> so the specialist's tool node points at it.
+const SEARCH_TOOL_ID = process.env.SEARCH_TOOL_ID || 'REPLACE_WITH_SEARCH_TOOL_ID';
+
+// ---- language model node (shared; provider chosen in model-config.mjs) -----
 function modelNode(x, y) {
-  return node({
-    parameters: { modelName: MODEL, options: { temperature: 0.2 } },
-    name: 'Gemini Model',
-    type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
-    typeVersion: 1,
-    position: pos(x, y),
-    credentials: { googlePalmApi: GEMINI_CRED },
-  });
+  return node({ ...modelNodeFields(), position: pos(x, y) });
 }
 
 // ---- HTTP request tool (httpRequestTool 4.2, proven in spike) ------------
@@ -56,7 +53,7 @@ function httpTool({ name, description, method, url, queryParams, bodyParams }) {
 // already self-describing, tools carry their own descriptions).
 
 // ---- sub-workflow specialist -------------------------------------------------
-function specialistWorkflow(name, promptText, { tools = [], formatJs, prepareJs, returnSteps = false, retry = false } = {}) {
+function specialistWorkflow(name, promptText, { tools = [], formatJs, prepareJs, returnSteps = false, retry = false, maxIterations = 6 } = {}) {
   const nodes = [];
   const connections = {};
 
@@ -90,7 +87,10 @@ return [{ json: { chatInput: String(q).trim() } }];`,
     parameters: {
       promptType: 'define',
       text: '={{ $json.chatInput }}',
-      options: { systemMessage: promptText, returnIntermediateSteps: !!returnSteps },
+      // maxIterations caps how many LLM round-trips a specialist may spend. The
+      // default (10) let product_discovery burn 38 parallel searches and then
+      // return "Agent stopped due to max iterations." — see PLAN.md perf notes.
+      options: { systemMessage: promptText, returnIntermediateSteps: !!returnSteps, maxIterations },
     },
     name: 'AI Agent',
     type: '@n8n/n8n-nodes-langchain.agent',
@@ -104,7 +104,7 @@ return [{ json: { chatInput: String(q).trim() } }];`,
   nodes.push(agent);
   connections['Sub Trigger'] = { main: [[{ node: 'Prepare Task', type: 'main', index: 0 }]] };
   connections['Prepare Task'] = { main: [[{ node: 'AI Agent', type: 'main', index: 0 }]] };
-  connections['Gemini Model'] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
+  connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 
   nodes.push(modelNode(400, -180));
 
@@ -113,8 +113,8 @@ return [{ json: { chatInput: String(q).trim() } }];`,
     const tn = node({
       parameters: t.params,
       name: t.name,
-      type: 'n8n-nodes-base.httpRequestTool',
-      typeVersion: 4.2,
+      type: t.type || 'n8n-nodes-base.httpRequestTool',
+      typeVersion: t.typeVersion || 4.2,
       position: pos(640, ty),
     });
     nodes.push(tn);
@@ -145,6 +145,92 @@ return [{ json: { text } }];`,
 }
 
 // ---------------------------------------------------------------------------
+// Slim product-search tool (its own sub-workflow).
+// The store's /api/v4/products returns ~13 KB of JSON per call; the specialist
+// used to shove that raw payload into its context on every search, which is what
+// drove one turn to ~145k input tokens. This tool hits the same endpoint and
+// returns one compact line per product — same facts, a fraction of the tokens.
+// ---------------------------------------------------------------------------
+const SEARCH_CODE = `
+const j = $input.first().json ?? {};
+const kw = String(j.query ?? j.input ?? '').trim().slice(0, 120) || 'popular';
+const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+
+function httpText(url) {
+  return new Promise((resolve) => {
+    let u = null;
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve(null); }
+    const mod = require(u.protocol === 'https:' ? 'https' : 'http');
+    const req = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: 'GET' }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; if (data.length > 2000000) { req.destroy(); resolve(null); } });
+      res.on('end', () => resolve(data));
+      res.on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(15000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{'); const k = s.indexOf('[');
+  const start = i < 0 ? k : (k < 0 ? i : Math.min(i, k));
+  if (start < 0) return null;
+  try { return JSON.parse(s.slice(start)); } catch (e) { return null; }
+}
+function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : 0; }
+function taka(n) { return '\u09f3' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
+
+const parsed = firstJson(await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(kw) + '&limit=6'));
+const arr = parsed && Array.isArray(parsed.data) ? parsed.data : [];
+
+if (!arr.length) {
+  return [{ json: { text: 'No products matched "' + kw + '". Try a broader or different keyword.' } }];
+}
+
+const lines = arr.map((p) => {
+  const price = num(p.nonformated_price) || num(p.main_price) || num(p.web_price);
+  const was = num(p.stroked_price);
+  const stock = p.in_stock ? ('IN STOCK (' + (Number(p.current_stock) || 0) + ' left)') : 'OUT OF STOCK';
+  const size = p.custom_size ? ' ' + String(p.custom_size) : '';
+  const disc = (was > price && price > 0) ? ' (was ' + taka(was) + ')' : '';
+  const hasOpts = (p.variant_product === true || Number(p.variant_product) > 0);
+  const opts = hasOpts ? ' | SIZE OPTIONS (choose one)' : ' | no size options';
+  return '- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + taka(price) + disc + ' | ' + stock + opts;
+});
+
+const text = 'Search "' + kw + '" - ' + arr.length + ' result(s), prices in BDT (\u09f3):\\n' + lines.join('\\n') +
+  '\\nPass an id= to cart-add or product-detail. Only recommend or add items marked IN STOCK. A size printed in the product name (e.g. "(50ml)") is part of the name — it is NOT an option. Only a line marked "SIZE OPTIONS" needs a chosen option name (call product-detail for the exact names).';
+return [{ json: { text } }];
+`;
+
+function searchToolWorkflow() {
+  const nodes = [];
+  const connections = {};
+  nodes.push(
+    node({
+      parameters: { events: 'worklfow_call', inputSource: 'passthrough' },
+      name: 'Sub Trigger',
+      type: 'n8n-nodes-base.executeWorkflowTrigger',
+      typeVersion: 1.2,
+      position: pos(0, 0),
+    }),
+  );
+  nodes.push(
+    node({
+      parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: SEARCH_CODE },
+      name: 'Search',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: pos(240, 0),
+    }),
+  );
+  connections['Sub Trigger'] = { main: [[{ node: 'Search', type: 'main', index: 0 }]] };
+  return { name: 'tool-search-products', nodes, connections, settings: { executionOrder: 'v1' } };
+}
+
+// ---------------------------------------------------------------------------
 // Specialists
 // ---------------------------------------------------------------------------
 
@@ -152,16 +238,20 @@ const productDiscovery = specialistWorkflow('specialist-product-discovery', P.PR
   retry: true,
   tools: [
     {
-      name: 'search-products',
-      params: httpTool({
-        name: 'search-products',
+      name: 'search_products',
+      type: '@n8n/n8n-nodes-langchain.toolWorkflow',
+      typeVersion: 2.1,
+      params: {
+        name: 'search_products',
         description: P.TOOL.searchProducts,
-        method: 'GET',
-        url: `=${P.STORE}/api/v4/products?keyword={{ encodeURIComponent($fromAI('query', 'product keyword to search', 'string')) }}&limit=5{{ $fromAI('brand', 'optional brand name filter', 'string') ? '&brand=' + encodeURIComponent($fromAI('brand', 'optional brand name filter', 'string')) : '' }}`,
-        // NOTE: max_price intentionally NOT passed: store Meilisearch index has no
-        // filterable attributes, so ?max_price= crashes the API (unit_price not filterable).
-        // Budget is enforced by the specialist prompt from returned prices instead.
-      }),
+        source: 'database',
+        workflowId: { value: SEARCH_TOOL_ID },
+        workflowInputs: { mappingMode: 'defineBelow', value: null },
+      },
+      // NOTE: the search returns a compact list (see searchToolWorkflow). The
+      // store's own search cannot filter by price (Meilisearch has no filterable
+      // attributes — ?max_price= 500s), so budget is enforced by the prompt from
+      // the returned prices.
     },
     {
       name: 'product-detail',
@@ -308,10 +398,30 @@ if (order) {
     })),
   };
   // Belt and braces: strip identity values from the prose even if the model echoed them.
-  const pii = [addr.name, addr.phone, addr.additional_phone, addr.email, addr.address, addr.area, addr.postal_code]
-    .map((v) => String(v == null ? '' : v).trim())
-    .filter((v) => v.length > 1);
-  for (const p of pii) text = text.split(p).join('[hidden]');
+  // Case-insensitive, and covers the city/state/country plus their individual words: the
+  // model wrote "within Dhaka" while the stored address was "jatrbari dhaka" (lowercase),
+  // so a case-sensitive exact match missed it and the delivery city leaked to the customer.
+  const redact = (s, term) => {
+    const t = String(term);
+    if (t.length < 2) return s;
+    const lt = t.toLowerCase();
+    let out = ''; let rest = s;
+    for (;;) {
+      const i = rest.toLowerCase().indexOf(lt);
+      if (i < 0) return out + rest;
+      out += rest.slice(0, i) + '[hidden]';
+      rest = rest.slice(i + t.length);
+    }
+  };
+  const terms = new Set();
+  for (const v of [addr.name, addr.phone, addr.additional_phone, addr.email, addr.address, addr.area, addr.city, addr.state, addr.country, addr.postal_code]) {
+    const s = String(v == null ? '' : v).trim();
+    if (s.length > 1) terms.add(s);
+  }
+  for (const v of [addr.area, addr.city, addr.state, addr.address]) {
+    for (const w of String(v == null ? '' : v).split(/[\\s,]+/)) if (w.length > 2) terms.add(w);
+  }
+  for (const t of terms) text = redact(text, t);
 }
 
 text = text.replace(/META_ORDER_JSON:[^\\n]*/gi, '').replace(/\\[BLOCK[^\\]]*\\]/gi, '').replace(/\\n{2,}/g, '\\n').trim();
@@ -344,6 +454,9 @@ const specMap = {
 for (const [k, v] of Object.entries(specMap)) {
   fs.writeFileSync(`${OUT}/${k}.json`, JSON.stringify(v, null, 2));
 }
+fs.writeFileSync(`${OUT}/searchTool.json`, JSON.stringify(searchToolWorkflow(), null, 2));
 
-console.log('built specialists:', Object.keys(specMap).join(', '));
+console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool');
+console.log('search tool workflow id:', SEARCH_TOOL_ID);
+console.log('model:', MODEL_NODE.provider, '->', MODEL_NODE.model);
 console.log('out dir:', OUT);
