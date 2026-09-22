@@ -3,11 +3,10 @@
 // ids are injected from the deploy step (passed via env or edited below).
 import fs from 'node:fs';
 import * as P from './prompts.js';
+import { MODEL_NODE, modelNodeFields } from './model-config.mjs';
 
 const OUT = 'dev/out';
-const GEMINI_CRED = { id: 'NZ6P1UaAuMYlAFa1', name: 'Gemini API Palm v3' };
 const PG_CRED = { id: 'EsaKbJSqeQFEMuwd', name: 'fastmart Postgres (fastmart_ai DB)' };
-const MODEL = 'models/gemini-3.7-flash';
 
 // ids produced by dev/deploy.mjs
 const SPEC = {
@@ -184,13 +183,16 @@ const SPECIALIST_TOOLS = [
 // Cart-add stays on orchestrator (orchestrator searches via product_discovery, then adds directly)
 // NOTE: $fromAI in queryParams does NOT resolve in httpRequestTool 4.2 as AI tool
 // (proven: search-products sent no keyword). Embed params directly in URL instead.
+// The `variant` argument is the option NAME (e.g. "45ml"), not an id — the store reads
+// it as a string and 500s with "Attempt to read property price on null" if a variant
+// product is added without it. Passed only when non-empty so plain products are unaffected.
 const CART_ADD_TOOL = {
   name: 'cart-add',
   params: httpToolParams({
     name: 'cart-add',
     description: P.TOOL.cartAdd,
     method: 'POST',
-    url: `=${P.STORE}/api/v3/carts/add?user_id={{ encodeURIComponent($fromAI('user_id', 'the guest cart user id shown in CURRENT SHOPPING CONTEXT', 'string')) }}&id={{ $fromAI('product_id', 'the product id to add (from product_discovery results)', 'number') }}&quantity={{ $fromAI('quantity', 'quantity to add (1-10)', 'number') }}`,
+    url: `=${P.STORE}/api/v3/carts/add?user_id={{ encodeURIComponent($fromAI('user_id', 'the guest cart user id shown in CURRENT SHOPPING CONTEXT', 'string')) }}&id={{ $fromAI('product_id', 'the product id to add (from product_discovery results)', 'number') }}&quantity={{ $fromAI('quantity', 'quantity to add (1-10)', 'number') }}{{ $fromAI('variant', 'the exact size/option name for a product that has size options (e.g. 45ml); empty for products with no options', 'string') ? '&variant=' + encodeURIComponent($fromAI('variant', 'the exact size/option name for a product that has size options (e.g. 45ml); empty for products with no options', 'string')) : '' }}`,
   }),
 };
 
@@ -391,6 +393,16 @@ if (doGrid && ids.length) {
     for (const pid of ids) {
       const det = await call(base + '/api/v3/products/' + pid);
       const obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
+      // Never render an out-of-stock item as a product card: the customer reads the grid
+      // as buyable (and "add the ones you suggested" resolves to these ids). The store's
+      // v3 detail carries in_stock — BUT a variant product reports the PARENT as
+      // in_stock=false / current_stock=0 while its sizes hold the real stock (e.g. product
+      // 1 is in_stock=false with a 30ml variant qty=13), so only drop it when no size has
+      // stock either.
+      const varr = Array.isArray(obj?.variant) ? obj.variant : [];
+      const variantInStock = varr.some((v) => Number(v.qty) > 0);
+      const parentOut = !!obj && (obj.in_stock === false || obj.in_stock === 0 || obj.in_stock === '0');
+      if (parentOut && !variantInStock) continue;
       const card = toCard(obj);
       if (card) cards.push(card);
     }
@@ -426,6 +438,13 @@ if (doCart && userId) {
 out.blocks = blocks;
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
+// token_usage stays null on this n8n version and that is not fixable in-workflow:
+// the Agent node's output is {output, intermediateSteps} (it never emits
+// tokenUsage), and n8n's data proxy cannot reach the ai_languageModel sub-node
+// where the per-call usage actually lives — every accessor ($('OpenAI Chat Model'),
+// $node[...], .all()/.first()) throws "No data found from main input".
+// The real per-turn cost is read out-of-band from n8n's Postgres runData by
+// dev/prod-bench.mjs (orchestrator + child specialist executions). See README.
 let usage = null;
 try { usage = $input.first().json.tokenUsage; } catch {}
 if (usage) out.token_usage = { promptTokens: usage.promptTokens || 0, completionTokens: usage.completionTokens || 0, totalTokens: usage.totalTokens || 0 };
@@ -436,14 +455,7 @@ return [{ json: out }];
 // Assemble workflow
 // ---------------------------------------------------------------------------
 function modelNode(x, y) {
-  return node({
-    parameters: { modelName: MODEL, options: { temperature: 0.2 } },
-    name: 'Gemini Model',
-    type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
-    typeVersion: 1,
-    position: pos(x, y),
-    credentials: { googlePalmApi: GEMINI_CRED },
-  });
+  return node({ ...modelNodeFields(), position: pos(x, y) });
 }
 
 const nodes = [];
@@ -473,7 +485,9 @@ nodes.push(
     parameters: {
       promptType: 'define',
       text: '={{ $json.chatInput }}',
-      options: { systemMessage: '={{ $json.systemPrompt }}', returnIntermediateSteps: true },
+      // Cap orchestrator round-trips. The default (10) let a single "add random
+      // products" turn spend 8 LLM calls chasing out-of-stock items.
+      options: { systemMessage: '={{ $json.systemPrompt }}', returnIntermediateSteps: true, maxIterations: 8 },
     },
     name: 'AI Agent',
     type: '@n8n/n8n-nodes-langchain.agent',
@@ -538,7 +552,7 @@ nodes.push(
 
 connections['Webhook'] = { main: [[{ node: 'Prepare Input', type: 'main', index: 0 }]] };
 connections['Prepare Input'] = { main: [[{ node: 'AI Agent', type: 'main', index: 0 }]] };
-connections['Gemini Model'] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
+connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
 connections['AI Agent'] = { main: [[{ node: 'Response', type: 'main', index: 0 }]] };
 
@@ -550,3 +564,4 @@ const wf = {
 };
 fs.writeFileSync(`${OUT}/agentChat.json`, JSON.stringify(wf, null, 2));
 console.log('built agentChat.json');
+console.log('model:', MODEL_NODE.provider, '->', MODEL_NODE.model);

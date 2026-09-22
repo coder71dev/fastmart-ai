@@ -34,11 +34,12 @@ Content-Type: application/json
   "reply": "string",                 // agent text (mirror of $fromAI('output'))
   "conversation_id": "string",       // echoed when provided, else a fresh guest id
   "blocks": [ ...OutputBlock... ],   // may be empty array
-  "token_usage": { "promptTokens": 123, "completionTokens": 45, "totalTokens": 168 }
+  "token_usage": null                // reserved; see note below
 }
 ```
 
 - **No token streaming, no inline approvals.** The widget waits for the full body (plain `response.json()`), shows a spinner meanwhile.
+- `token_usage` is **always `null`** on n8n `2.37.6`, and this is a platform limit, not a bug we can fix in the workflow: the Agent node's output is only `{output, intermediateSteps}` (this version never emits `tokenUsage`), and n8n's expression data proxy cannot read the `ai_languageModel` sub-node that actually holds the per-call usage — `$('OpenAI Chat Model')`, `$node[...]` and `.all()`/`.first()` all throw `No data found from 'main' input`. The field is kept in the response so a future n8n that does expose it needs no contract change. **For real per-turn cost, read n8n's own Postgres** (`metadata.tracing['llm.tokens.in'|'out']` per execution), which is what `dev/prod-bench.mjs` does — it sums the orchestrator **and** its child specialist executions.
 - `reply` may be empty when `blocks` is non-empty (a blocks-only turn, e.g. cart table).
 - `blocks` types are the widget's existing `OutputBlock` union:
   `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `order-status`.

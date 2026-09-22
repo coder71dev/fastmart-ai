@@ -30,7 +30,7 @@ docker compose up -d
 | `SANDBOX_API_RUNNER_REGISTRATION_TOKEN` | `openssl rand -hex 32` |
 | `SANDBOX_API_RUNNER_API_KEY` | `openssl rand -hex 32` |
 | `SEARXNG_SECRET` | `openssl rand -hex 32` |
-| `N8N_INSTANCE_AI_MODEL_API_KEY` | your Google AI Studio key (n8n Assistant only) |
+| `N8N_INSTANCE_AI_MODEL_API_KEY` | your Command Code key (n8n Assistant only — the same key the `OpenAI compatible Commandcode` workflow credential holds) |
 
 Generate every random in one go:
 
@@ -94,11 +94,13 @@ Log in with your **existing** owner email/password — do not run owner signup, 
 ```bash
 STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
 STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
-node dev/deploy.mjs dev/out/productDiscovery.json dev/out/supportSpecialist.json \
+node dev/deploy.mjs dev/out/searchTool.json     # prints the new search-tool workflow id
+SEARCH_TOOL_ID=<that id> STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDiscovery.json dev/out/supportSpecialist.json \
   dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
 ```
 
-This only works on an instance whose ids came from the restored DB — `dev/build-main.mjs` and `dev/deploy.mjs` reference specialist-workflow and credential ids by value. On a truly fresh instance (no restore) every id changes and you must import the 5 JSONs in the UI and recreate both credentials by hand.
+This only works on an instance whose ids came from the restored DB — `dev/build-main.mjs` and `dev/deploy.mjs` reference specialist-workflow and credential ids by value. On a truly fresh instance (no restore) every id changes and you must import the 6 JSONs in the UI and recreate both credentials by hand.
 
 **4. Point the widget at it.** On the live store:
 
@@ -159,13 +161,13 @@ Your workflows live in the `n8n_data` volume.
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | **Production stack** — n8n, its Postgres, and the n8n Assistant (sandbox + SearXNG + Gemini signature proxy). `docker compose up -d` is the whole deploy |
+| `docker-compose.yml` | **Production stack** — n8n, its Postgres, and the n8n Assistant (sandbox + SearXNG + the Gemini signature proxy, which is kept but unused now the model runs on Command Code). `docker compose up -d` is the whole deploy |
 | `docker-compose.dev.yml` | **Local-dev overlay** — adds the dev-only Meilisearch and the `fastmart-pro.test` host mapping, and opts back into plain HTTP. Never used on a server |
 | `.env.example` | Env template (production-shaped; local overrides documented at the bottom) |
 | `PLAN.md` | Full plan + progress tracking |
 | `spike-checklist.md` | 2-week de-risk spike |
 | `WIDGET-CONTRACT.md` | Widget ⇄ n8n webhook contract (final) |
-| `dev/build-workflows.mjs` | Builds the 4 specialist sub-workflows → `dev/out/*.json` |
+| `dev/build-workflows.mjs` | Builds the 4 specialist sub-workflows + the slim `tool-search-products` tool → `dev/out/*.json` |
 | `dev/build-main.mjs` | Builds the main agent-chat workflow → `dev/out/agentChat.json` |
 | `dev/deploy.mjs` | Upserts + activates workflows into live n8n (owner JWT) |
 | `dev/n8n-admin.mjs` | n8n REST admin helper (list/get/create/update/activate/execs) |
@@ -188,7 +190,7 @@ Your workflows live in the `n8n_data` volume.
 | `STORE_BASE_URL` | `https://example.com` | Base URL for ALL store API calls. Read at runtime by the Code nodes; **baked into the tool nodes at build time** (see Day-to-day dev loop) |
 | `POSTGRES_*` | n8n defaults | n8n's own DB (never the store DB) |
 | `SANDBOX_API_KEYS`, `SANDBOX_API_RUNNER_*`, `SEARXNG_SECRET` | *(empty)* | n8n Assistant secrets — `openssl rand -hex 32` each |
-| `N8N_INSTANCE_AI_MODEL` / `_API_KEY` / `_URL` | `gemini-3.7-flash` via `gemini-sig-proxy` | n8n Assistant's model. `_URL` empty = the provider's own address (OpenRouter is built in) |
+| `N8N_INSTANCE_AI_MODEL` / `_API_KEY` / `_URL` | `custom/deepseek/deepseek-v4.1-flash` on `https://api.commandcode.ai/provider/v1` | n8n Assistant's model, set from `.env` only — switching it is an edit + `docker compose up -d`, no rebuild. **Must be prefixed `custom/`**: instance-ai reads the text before the first `/` as an n8n provider name, and `deepseek` is one n8n ships, so a bare `deepseek/deepseek-v4.1-flash` is stripped to `deepseek-v4.1-flash` and rejected by the gateway. `_URL` is required for `custom/` (its baseURL); empty = the provider's own address (OpenRouter is built in; Command Code is not) |
 | `GENERIC_TIMEZONE` / `TZ` | `Asia/Dhaka` | Business timezone |
 | `MEILI_MASTER_KEY` | *(empty)* | **Dev overlay only** — the local store's search backend |
 
@@ -198,16 +200,33 @@ Your workflows live in the `n8n_data` volume.
 
 ```bash
 # 1. Edit prompts/tools in dev/prompts.js or the build scripts
-# 2. Rebuild + deploy everything:
+# 2. Rebuild + deploy everything (search tool first — the specialist points at its id):
 node dev/build-workflows.mjs && node dev/build-main.mjs
-node dev/deploy.mjs dev/out/productDiscovery.json dev/out/supportSpecialist.json \
+node dev/deploy.mjs dev/out/searchTool.json          # prints its id on first run
+#   on a fresh instance, rebuild with that id so the specialist's tool node points at it:
+#   SEARCH_TOOL_ID=<id> node dev/build-workflows.mjs
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDiscovery.json dev/out/supportSpecialist.json \
   dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
 
 # 3. Run the eval battery (10 cases, ~3 min, exit 0 = green):
 node dev/eval-harness.mjs                 # or --group cart / --out report.json
 ```
 
+> The search tool's workflow id is the one exception to "the ids are already in the repo" — a restore to a new instance mints a new id, so deploy `searchTool.json`, read the id it prints, and rebuild `productDiscovery.json` with `SEARCH_TOOL_ID=<id>` before deploying the rest.
+
 > The store host is **baked into the tool nodes at build time** (`STORE` in `dev/prompts.js`). The Code nodes (cart context, blocks/price-guard) read `$env.STORE_BASE_URL` at runtime, but the tool nodes do not. For a VPS build, prefix both build commands with `STORE_BASE_URL=https://<live-store>` and redeploy.
+
+> The **model node is baked at build time, but the provider is an env choice, not a code edit** — `dev/model-config.mjs` holds one descriptor per provider and both builders read it. For Command Code the built graph is `lmChatOpenAi` + `openAiApi`, and the **endpoint comes from the credential's own Base URL field** (`https://api.commandcode.ai/provider/v1`), never from `.env`:
+>
+> ```bash
+> node dev/build-main.mjs                               # Command Code (default)
+> MODEL_PROVIDER=gemini node dev/build-main.mjs          # n8n's own Google Gemini node
+> MODEL_PROVIDER=openrouter MODEL_CRED_ID=xxx \
+>   MODEL_CRED_NAME=OpenRouter node dev/build-main.mjs   # any other OpenAI-compatible gateway
+> MODEL=google/gemini-3.7-flash node dev/build-main.mjs  # same provider, different model
+> ```
+>
+> Unlike the Assistant, the workflows still need a rebuild **and** `dev/deploy.mjs` for the change to land — and editing the model in the n8n UI is silently overwritten by the next deploy. `MODEL_CRED_ID` / `MODEL_CRED_NAME` exist because n8n credential ids are per-instance (the ids in `model-config.mjs` are this instance's).
 
 ## Production benchmark
 
@@ -223,7 +242,7 @@ node dev/prod-bench.mjs --webhook https://ai.perfectobd.com/webhook/spike/agent-
 ```
 
 - Cost decode auto-turns off unless the webhook is `localhost` **or** `--force-db` is set (it reads the `fastmart-n8n-postgres` container). Latency/load still report without it.
-- Model price basis sits at the top of the file (`--price-in/--price-out` to override; default is the paid list rate for `gemini-3.7-flash`). Measured baseline 2026-09-08 (local, dev store): all-turn median ~5.8s / p90 ~8.5s, clean through 10 concurrent chats, ~$0.004 per full turn.
+- Model price basis sits at the top of the file (`--price-in/--price-out` to override). ⚠ The built-in defaults are still the old `gemini-3.7-flash` list rate — the workflows now run `deepseek/deepseek-v4.1-flash`, so pass both flags (or update the constants) or the cost column is meaningless. The latency baseline below was also measured on Gemini and has not been re-measured for the new model: measured 2026-09-08 (local, dev store) all-turn median ~5.8s / p90 ~8.5s, clean through 10 concurrent chats, ~$0.004 per full turn.
 - Cart scenarios write real `tmp-bench-*` guest carts then remove them, like eval-harness. Point it at a **live** store only when you accept that (or skip cart via a short run — see `--phase`).
 
 ## Store access (HTTP API only)
