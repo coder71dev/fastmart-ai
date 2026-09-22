@@ -194,7 +194,38 @@ Your workflows live in the `n8n_data` volume.
 | `GENERIC_TIMEZONE` / `TZ` | `Asia/Dhaka` | Business timezone |
 | `MEILI_MASTER_KEY` | *(empty)* | **Dev overlay only** — the local store's search backend |
 
-> Pinned in `docker-compose.yml`, not settable from `.env`: `N8N_RUNNERS_ENABLED=false` (runners strip `require('http')` from Code nodes, which the cart context + blocks need), `NODE_FUNCTION_ALLOW_BUILTIN=http,https,url`, and `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` (Code nodes read `$env.STORE_BASE_URL`).
+> Pinned in `docker-compose.yml`, not settable from `.env`: `NODE_FUNCTION_ALLOW_BUILTIN=http,https,util,path,url,zlib,crypto,stream,events` (task runners are always on in n8n 2+, and this is the setting that grants the Code nodes `require('http')` — verified working on 2.40.5), `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` (Code nodes read `$env.STORE_BASE_URL`), and `N8N_RUNNERS_TASK_TIMEOUT=300` (n8n 3 shortens the default to 60s — see below).
+
+## Upgrading n8n
+
+`docker-compose.yml` pins the n8n image to the **`latest`** tag — n8n's `stable` channel (`2.40.5` at time of writing). `pull` is therefore the whole upgrade, but the tag also moves to **3.0.x by itself** when n8n ships it, so re-read the deprecation report on every pull:
+
+```bash
+docker compose pull n8n
+docker compose up -d n8n            # recreates only n8n; Postgres keeps its data
+docker logs fastmart-n8n | head -40 # migrations + the deprecation report
+```
+
+Want a bump to be a deliberate act instead? Pin an exact tag in compose (`:2.41.0`, `:v3-rc-20260921`) and change it by hand.
+
+Each start prints a **deprecation report** naming the config v3 will change — that report is the authoritative checklist for *this* instance, not this table. Everything it can act on is already handled:
+
+| v3 breaking change | Status here |
+|---|---|
+| Docker-only self-hosting | Already Docker (`docker compose up -d`) |
+| `N8N_RUNNERS_ENABLED` removed | Dropped from compose — runners are always on since 2.0, and the Code nodes' `require('http')` still works |
+| `N8N_RUNNERS_TASK_TIMEOUT` default 300s → 60s | Set to `300` in compose, so the blocks Code node keeps its ceiling |
+| `~/.n8n/binaryData` → `~/.n8n/storage` | Nothing to do — the volume mounts `~/.n8n`, the parent of both |
+| Removed nodes (Function, Item Lists, Cron, legacy OpenAI, SerpApi, …) | Unused |
+| AI Agent v1 modes removed | Already the v2 Tools Agent |
+| `$getPairedItem`, `$evaluateExpression` removed | Unused |
+| Sub-workflow Local File/URL sources and the "Any workflow" caller policy removed | Tool nodes use the `database` source; no caller policy set |
+| Chat Trigger WebSocket frames become JSON | Not used — the widget calls the plain webhook |
+| `N8N_UNVERIFIED_PACKAGES_ENABLED` defaults false; Compression limits lowered | No community packages, no Compression node |
+
+Two known, accepted warnings: the internal task runner mode is deprecated (fine for a single instance; move to the `n8nio/runners` image in external mode if you ever scale out), and the Python runner fails to start because the image has no Python (we only use JavaScript Code nodes).
+
+After any version bump, re-run `node scratchpad-verify.mjs` and `node dev/eval-harness.mjs` before trusting it.
 
 ## Day-to-day dev loop
 
