@@ -94,13 +94,13 @@ Log in with your **existing** owner email/password — do not run owner signup, 
 ```bash
 STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
 STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
-node dev/deploy.mjs dev/out/searchTool.json     # prints the new search-tool workflow id
-SEARCH_TOOL_ID=<that id> STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
-node dev/deploy.mjs dev/out/searchTool.json dev/out/productDiscovery.json dev/out/supportSpecialist.json \
-  dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json   # prints both new tool workflow ids
+SEARCH_TOOL_ID=<search id> DETAIL_TOOL_ID=<detail id> STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json dev/out/productDiscovery.json \
+  dev/out/supportSpecialist.json dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
 ```
 
-This only works on an instance whose ids came from the restored DB — `dev/build-main.mjs` and `dev/deploy.mjs` reference specialist-workflow and credential ids by value. On a truly fresh instance (no restore) every id changes and you must import the 6 JSONs in the UI and recreate both credentials by hand.
+This only works on an instance whose ids came from the restored DB — `dev/build-main.mjs` and `dev/deploy.mjs` reference specialist-workflow and credential ids by value. On a truly fresh instance (no restore) every id changes and you must import the 7 JSONs in the UI and recreate both credentials by hand.
 
 **4. Point the widget at it.** On the live store:
 
@@ -171,7 +171,7 @@ Your workflows live in the `n8n_data` volume.
 | `PLAN.md` | Full plan + progress tracking |
 | `spike-checklist.md` | 2-week de-risk spike |
 | `WIDGET-CONTRACT.md` | Widget ⇄ n8n webhook contract (final) |
-| `dev/build-workflows.mjs` | Builds the 4 specialist sub-workflows + the slim `tool-search-products` tool → `dev/out/*.json` |
+| `dev/build-workflows.mjs` | Builds the 4 specialist sub-workflows + the slim `tool-search-products` and `tool-product-detail` tools → `dev/out/*.json` |
 | `dev/build-main.mjs` | Builds the main agent-chat workflow → `dev/out/agentChat.json` |
 | `dev/deploy.mjs` | Upserts + activates workflows into live n8n (owner JWT) |
 | `dev/n8n-admin.mjs` | n8n REST admin helper (list/get/create/update/activate/execs) |
@@ -238,19 +238,19 @@ After any version bump, re-run `node scratchpad-verify.mjs` and `node dev/eval-h
 
 ```bash
 # 1. Edit prompts/tools in dev/prompts.js or the build scripts
-# 2. Rebuild + deploy everything (search tool first — the specialist points at its id):
+# 2. Rebuild + deploy everything (the two tool sub-workflows have their own ids):
 node dev/build-workflows.mjs && node dev/build-main.mjs
-node dev/deploy.mjs dev/out/searchTool.json          # prints its id on first run
-#   on a fresh instance, rebuild with that id so the specialist's tool node points at it:
-#   SEARCH_TOOL_ID=<id> node dev/build-workflows.mjs
-node dev/deploy.mjs dev/out/searchTool.json dev/out/productDiscovery.json dev/out/supportSpecialist.json \
-  dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json   # print their ids on first run
+#   on a fresh instance, rebuild with those ids so the specialist's tool nodes point at them:
+#   SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id> node dev/build-workflows.mjs
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json dev/out/productDiscovery.json \
+  dev/out/supportSpecialist.json dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
 
 # 3. Run the eval battery (10 cases, ~3 min, exit 0 = green):
 node dev/eval-harness.mjs                 # or --group cart / --out report.json
 ```
 
-> The search tool's workflow id is the one exception to "the ids are already in the repo" — a restore to a new instance mints a new id, so deploy `searchTool.json`, read the id it prints, and rebuild `productDiscovery.json` with `SEARCH_TOOL_ID=<id>` before deploying the rest.
+> The two tool sub-workflows are the exception to "the ids are already in the repo" — a restore to a new instance mints new ids, so deploy `searchTool.json` and `productDetailTool.json`, read the ids they print, and rebuild `productDiscovery.json` with `SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id>` before deploying the rest.
 
 > The store host is **baked into the tool nodes at build time** (`STORE` in `dev/prompts.js`). The Code nodes (cart context, blocks/price-guard) read `$env.STORE_BASE_URL` at runtime, but the tool nodes do not. For a VPS build, prefix both build commands with `STORE_BASE_URL=https://<live-store>` and redeploy.
 
