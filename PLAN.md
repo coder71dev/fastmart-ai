@@ -1,7 +1,7 @@
 # Plan — Perfecto AI Shopping Assistant on n8n
 
 **Status:** ✅ **Spike PASSED 2026-09-02.** Part 1: 5/7 gates green — Steps 1–5 & 7 done; Step 6 blocked on external creds/HTTPS (documented, revisit at Part 3). n8n brain + store HTTP API + guest cart + widget webhook contract all proven live against the local store. **Part 2 — Full build DONE 2026-09-03 (5/5): agent+memory, store tools, 4 specialists, blocks JSON + price-guard, external eval harness — all tested live end-to-end (10/10 eval green).**
-**Last updated:** 2026-09-22
+**Last updated:** 2026-09-23
 **Target:** Rebuild the Biz Buddy AI chat brain on **n8n**, as a standalone app at `D:\laragon\www\fastmart-ai`, targeting the **live Perfecto store** over **HTTP API**.
 
 ---
@@ -149,10 +149,18 @@ Traced all 10 turns of one real session from n8n's Postgres (`fastmart_ai.chat_m
 Reported from conversation `tmp-widget-mucieuanxwr9ks`: **9 LLM calls / ~34.8k tokens / 35.5s**, six of them in `specialist-product-discovery`, ending in *"the search didn't complete on my end"*.
 - **Root cause:** the search tool was fine — all 13 of its searches returned results. The specialist kept re-phrasing the keyword because the store's top results for oily-skin categories are mostly **OUT OF STOCK** (Neutrogena, CeraVe, Simple, Deconstruct, Nivea Men …), and while the prompt forbade recommending out-of-stock items it never said what to do when *nothing* qualifies. It burned all 6 iterations, and the Agent node returned the literal string `Agent stopped due to max iterations.`, which the orchestrator paraphrased into that apology. Full cost, zero value.
 - **Fix — prevent and recover:**
-  - **Prompt** (`PRODUCT_DISCOVERY`): hard cap of **3 searches**; if the task lists several categories, cover only the 1–2 that matter most; and if nothing in stock fits the budget, say so and offer the closest in-stock option — that is a complete answer, not a failure.
+  - **Prompt** (`PRODUCT_DISCOVERY`): hard cap of **TWO searches**; if the task lists several categories, cover only the ONE that matters most; and if nothing in stock fits the budget, say so and offer the closest in-stock option — that is a complete answer, not a failure.
   - **Deterministic salvage:** `returnIntermediateSteps: true` on the specialist, and `Format Out` now rebuilds the reply from the searches already collected when the agent returns the max-iterations string — in-stock only, cheapest first, budget parsed from the task text, emitting `META_PRODUCT_IDS` + `[BLOCK product-grid]`. No model call, so it cannot loop. If nothing is salvageable it says so plainly rather than leaking the technical string.
   - **Same leak class closed everywhere:** all four specialists' `Format Out` nodes now replace a raw max-iterations output, so none can hand that string to the orchestrator (the cart one deliberately does not guess cart state either way).
 - **Verified:** `Format Out` unit-tested against exec 1464's **real** 13 observations in four scenarios — salvage, nothing-to-offer, prose-without-footer (**not** overwritten, so a clarifying question is never discarded), and a normal answer passed through untouched. Live replay of the same request: **5 calls / 14.0k tokens / 15.3s**, 3 real in-stock cards plus an honest "no oily-skin cleanser is in stock" line — versus 9 calls / 34.8k / 35.5s and no answer. Eval battery 10/10 green after redeploying all four specialists.
+
+### Fixed-base prompt trim (2026-09-23, branch `cost-trim`)
+`dev/prompt-size.mjs` measures what both agents re-send on **every** LLM call. The orchestrator's base was **2,140 tok/call** (1,933 of it the system prompt) and a product turn makes 2-3 orchestrator calls, so it is charged 2-3 times; `PRODUCT_DISCOVERY` was **1,368** and its agent makes 2-3 calls.
+- **What was cut** — duplication and meta-reasoning only, every rule kept: the orchestrator stated "never the word guest" twice, split "never invent" across two rules and repeated cart brevity in three; `PRODUCT_DISCOVERY` stated the quote-price/stock rule three times. Its EFFICIENCY block also **contradicted its RULES section** (one forbade re-wording a keyword, the other permitted one looser search) — now reconciled: a repeat is allowed **only** when the first search returned nothing.
+- **Result:** orchestrator base **2,140 → 1,929** tok/call; `PRODUCT_DISCOVERY` **1,368 → 1,274**. Deterministic, so on this turn shape (2 orchestrator + 3 specialist calls) it is worth ~**700 tok/turn**.
+- **Controlled A/B**, same question ("find me a niacinamide serum under 1000 taka"), old prompts vs new, same day: **18,428 → 18,053 tok** (~2%) at 17.4s → 18.7s (latency is noise at n=1). Per call: orchestrator 2,696→2,524 and 3,017→2,903; specialist 1,820→1,732, 2,448→2,603 (**higher** — it accumulated *different* search results that run), 8,076→7,817. Run-to-run variance (~±250/call) is the same order as the saving, so one turn cannot prove it; the direction held on 4 of 5 calls.
+- **Honest conclusion:** the prompts were already mostly irreducible rule text, so this lever is small (**~4%**). The dominant term in a product turn is now the **last specialist call (~7-8k tok)** — accumulated search results plus the agent's own reasoning, not prompt fat. The rules themselves cannot be cut further without risking the customer-visible defects each was written for.
+- Eval battery **10/10** after redeploy; smoke turn green.
 
 ---
 
