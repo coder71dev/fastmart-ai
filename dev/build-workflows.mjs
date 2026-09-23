@@ -161,19 +161,24 @@ const j = $input.first().json ?? {};
 const kw = String(j.query ?? j.input ?? '').trim().slice(0, 120) || 'popular';
 const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
 
+// Returns { ok, status, body } — the STATUS matters. The old version resolved
+// null on any trouble and threw the status away, so a 500 from the store (its
+// Meilisearch down) was indistinguishable from "no products matched": the agent
+// told the customer "not in our catalogue" about a product sitting on the
+// homepage. A failed search must never be reported as an empty one.
 function httpText(url) {
   return new Promise((resolve) => {
     let u = null;
-    try { u = new (require('url').URL)(url); } catch (e) { return resolve(null); }
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve({ ok: false, status: 0, body: null }); }
     const mod = require(u.protocol === 'https:' ? 'https' : 'http');
     const req = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: 'GET' }, (res) => {
       let data = '';
-      res.on('data', (c) => { data += c; if (data.length > 2000000) { req.destroy(); resolve(null); } });
-      res.on('end', () => resolve(data));
-      res.on('error', () => resolve(null));
+      res.on('data', (c) => { data += c; if (data.length > 2000000) { req.destroy(); resolve({ ok: false, status: res.statusCode, body: null }); } });
+      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: data }));
+      res.on('error', () => resolve({ ok: false, status: res.statusCode, body: null }));
     });
-    req.on('error', () => resolve(null));
-    req.setTimeout(15000, () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve({ ok: false, status: 0, body: null }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ ok: false, status: 0, body: null }); });
     req.end();
   });
 }
@@ -187,8 +192,17 @@ function firstJson(s) {
 function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : 0; }
 function taka(n) { return '\u09f3' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
 
-const parsed = firstJson(await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(kw) + '&limit=6'));
+const res = await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(kw) + '&limit=6');
+const parsed = firstJson(res.ok ? res.body : null);
 const arr = parsed && Array.isArray(parsed.data) ? parsed.data : [];
+
+// A search that never ran is NOT a search that found nothing. Say so in a form
+// the specialist cannot mistake for an empty catalogue, and forbid the wording
+// that made the bug visible ("couldn't find it in our catalogue").
+if (!parsed) {
+  return [{ json: { text: 'SEARCH UNAVAILABLE - the store search did not run' + (res.status ? ' (HTTP ' + res.status + ')' : ' (no response)') +
+    '. Do NOT say the product does not exist, is out of stock, or is not in the catalogue - you have no result either way. Tell the customer the catalogue search is temporarily unavailable and to try again in a moment.\\nMETA_PRODUCT_IDS: none' } }];
+}
 
 if (!arr.length) {
   return [{ json: { text: 'No products matched "' + kw + '". Try a broader or different keyword.' } }];
