@@ -17,6 +17,9 @@ const pos = (x, y) => [x, y];
 // fresh install: deploy dev/out/searchTool.json first, then rebuild with
 // SEARCH_TOOL_ID=<id> so the specialist's tool node points at it.
 const SEARCH_TOOL_ID = process.env.SEARCH_TOOL_ID || 'REPLACE_WITH_SEARCH_TOOL_ID';
+// Same deal for the slim product-detail tool (DETAIL_CODE below): deploy
+// dev/out/productDetailTool.json first, then rebuild with DETAIL_TOOL_ID=<id>.
+const DETAIL_TOOL_ID = process.env.DETAIL_TOOL_ID || 'REPLACE_WITH_DETAIL_TOOL_ID';
 
 // ---- language model node (shared; provider chosen in model-config.mjs) -----
 function modelNode(x, y) {
@@ -220,7 +223,7 @@ const lines = arr.map((p) => {
 });
 
 const text = 'Search "' + kw + '" - ' + arr.length + ' result(s), prices in BDT (\u09f3):\\n' + lines.join('\\n') +
-  '\\nPass an id= to cart-add or product-detail. Only recommend or add items marked IN STOCK. A size printed in the product name (e.g. "(50ml)") is part of the name — it is NOT an option. Only a line marked "SIZE OPTIONS" needs a chosen option name (call product-detail for the exact names).';
+  '\\nPass an id= to cart-add or product_detail. Only recommend or add items marked IN STOCK. A size printed in the product name (e.g. "(50ml)") is part of the name — it is NOT an option. Only a line marked "SIZE OPTIONS" needs a chosen option name (call product_detail for the exact names).';
 return [{ json: { text } }];
 `;
 
@@ -247,6 +250,121 @@ function searchToolWorkflow() {
   );
   connections['Sub Trigger'] = { main: [[{ node: 'Search', type: 'main', index: 0 }]] };
   return { name: 'tool-search-products', nodes, connections, settings: { executionOrder: 'v1' } };
+}
+
+// ---------------------------------------------------------------------------
+// Slim product-detail tool (its own sub-workflow).
+// /api/v3/products/{id} returns ~14.5k chars for ONE product — photos, tags,
+// meta, rating breakouts and a 7k-char HTML description. Measured on exec 1731:
+// that single observation was 14,553 chars (~3,638 tokens), 93% of ALL tool
+// output in the turn, and the specialist re-sends it on every later LLM call.
+// This returns only what the agent actually uses: identity, price and stock,
+// the exact size-option names with their prices and stock, and the description
+// as plain text (the HTML strips down to ~450 chars — no real loss).
+// ---------------------------------------------------------------------------
+const DETAIL_CODE = `
+const j = $input.first().json ?? {};
+const pidRaw = String(j.query ?? j.input ?? j.product_id ?? j.id ?? '');
+const pid = (pidRaw.match(/[0-9]+/) || [''])[0];
+const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+
+if (!pid) {
+  return [{ json: { text: 'No product id was passed. Pass the numeric id from a search_products result, e.g. 1.' } }];
+}
+
+// Returns { ok, status, body } — the status matters: a failed lookup must never
+// read as "this product does not exist" (the same trap the search tool had).
+function httpText(url) {
+  return new Promise((resolve) => {
+    let u = null;
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve({ ok: false, status: 0, body: null }); }
+    const mod = require(u.protocol === 'https:' ? 'https' : 'http');
+    const req = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: 'GET' }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; if (data.length > 2000000) { req.destroy(); resolve({ ok: false, status: res.statusCode, body: null }); } });
+      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: data }));
+      res.on('error', () => resolve({ ok: false, status: res.statusCode, body: null }));
+    });
+    req.on('error', () => resolve({ ok: false, status: 0, body: null }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ ok: false, status: 0, body: null }); });
+    req.end();
+  });
+}
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{'); const k = s.indexOf('[');
+  const start = i < 0 ? k : (k < 0 ? i : Math.min(i, k));
+  if (start < 0) return null;
+  try { return JSON.parse(s.slice(start)); } catch (e) { return null; }
+}
+function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : 0; }
+function taka(n) { return '\u09f3' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
+function strip(s) {
+  return String(s == null ? '' : s)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \\t\\r\\n]+/g, ' ')
+    .trim();
+}
+
+const res = await httpText(base + '/api/v3/products/' + encodeURIComponent(pid));
+const parsed = firstJson(res.ok ? res.body : null);
+if (!parsed) {
+  return [{ json: { text: 'DETAIL UNAVAILABLE - the store did not return this product' + (res.status ? ' (HTTP ' + res.status + ')' : ' (no response)') +
+    '. Do NOT say the product does not exist or is out of stock - you have no result either way. Recommend from the search result you already have, or say the catalogue is temporarily unavailable.' } }];
+}
+const p = Array.isArray(parsed.data) ? parsed.data[0] : parsed.data;
+if (!p) return [{ json: { text: 'No product found with id=' + pid + '.' } }];
+
+const brand = p.brand && typeof p.brand === 'object' ? (p.brand.name ?? '') : (p.brand ?? '');
+const cat = p.category && typeof p.category === 'object' ? (p.category.name ?? '') : (p.category ?? '');
+const out = ['Product id=' + p.id + ' | ' + String(p.name ?? '').trim() + (brand ? ' | brand ' + brand : '') + (cat ? ' | category ' + cat : '')];
+
+const variants = Array.isArray(p.variant) ? p.variant : [];
+if (variants.length) {
+  const opts = variants.map((v) => ({ name: String(v.variant ?? 'option'), price: num(v.discount_price) || num(v.price), qty: num(v.qty) }));
+  const inStock = opts.filter((o) => o.qty > 0);
+  const from = Math.min.apply(null, (inStock.length ? inStock : opts).map((o) => o.price));
+  out.push('Price: from ' + taka(from) + ' (price and stock are per size option)');
+  out.push('SIZE OPTIONS - pass exactly ONE of these as the variant argument:');
+  for (const o of opts) out.push('- ' + o.name + ' | ' + taka(o.price) + ' | ' + (o.qty > 0 ? o.qty + ' in stock' : 'OUT OF STOCK'));
+} else {
+  out.push('Price: ' + taka(num(p.calculable_price) || num(p.main_price)) + ' | ' + (p.in_stock ? 'IN STOCK (' + num(p.current_stock) + ' left)' : 'OUT OF STOCK'));
+  out.push('Size options: NONE - do NOT pass a variant for this product.');
+}
+out.push('Rating: ' + (num(p.rating) || 'none') + ' | sold: ' + num(p.num_of_sale));
+const desc = strip(p.description);
+const short = strip(p.short_description);
+if (desc) out.push('Description: ' + desc);
+if (short && short !== desc) out.push('Short description: ' + short);
+
+return [{ json: { text: out.join('\\n') } }];
+`;
+
+function productDetailToolWorkflow() {
+  const nodes = [];
+  const connections = {};
+  nodes.push(
+    node({
+      parameters: { events: 'worklfow_call', inputSource: 'passthrough' },
+      name: 'Sub Trigger',
+      type: 'n8n-nodes-base.executeWorkflowTrigger',
+      typeVersion: 1.2,
+      position: pos(0, 0),
+    }),
+  );
+  nodes.push(
+    node({
+      parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: DETAIL_CODE },
+      name: 'Detail',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: pos(240, 0),
+    }),
+  );
+  connections['Sub Trigger'] = { main: [[{ node: 'Detail', type: 'main', index: 0 }]] };
+  return { name: 'tool-product-detail', nodes, connections, settings: { executionOrder: 'v1' } };
 }
 
 // ---------------------------------------------------------------------------
@@ -277,13 +395,19 @@ const productDiscovery = specialistWorkflow('specialist-product-discovery', P.PR
       // the returned prices.
     },
     {
-      name: 'product-detail',
-      params: httpTool({
-        name: 'product-detail',
+      // Underscored, because a toolWorkflow name allows letters, numbers and
+      // underscores only. Backed by the slim tool (DETAIL_CODE) rather than the
+      // raw store payload — see its comment for the measurement.
+      name: 'product_detail',
+      type: '@n8n/n8n-nodes-langchain.toolWorkflow',
+      typeVersion: 2.1,
+      params: {
+        name: 'product_detail',
         description: P.TOOL.productDetail,
-        method: 'GET',
-        url: `=${P.STORE}/api/v3/products/{{ $fromAI('product_id', 'the product id to get details for', 'number') }}`,
-      }),
+        source: 'database',
+        workflowId: { value: DETAIL_TOOL_ID },
+        workflowInputs: { mappingMode: 'defineBelow', value: null },
+      },
     },
   ],
   formatJs: `const inp = $input.first().json;
@@ -545,8 +669,10 @@ for (const [k, v] of Object.entries(specMap)) {
   fs.writeFileSync(`${OUT}/${k}.json`, JSON.stringify(v, null, 2));
 }
 fs.writeFileSync(`${OUT}/searchTool.json`, JSON.stringify(searchToolWorkflow(), null, 2));
+fs.writeFileSync(`${OUT}/productDetailTool.json`, JSON.stringify(productDetailToolWorkflow(), null, 2));
 
-console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool');
+console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool + productDetailTool');
 console.log('search tool workflow id:', SEARCH_TOOL_ID);
+console.log('product-detail tool workflow id:', DETAIL_TOOL_ID);
 console.log('model:', MODEL_NODE.provider, '->', MODEL_NODE.model);
 console.log('out dir:', OUT);

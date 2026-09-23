@@ -162,6 +162,16 @@ Reported from conversation `tmp-widget-mucieuanxwr9ks`: **9 LLM calls / ~34.8k t
 - **Honest conclusion:** the prompts were already mostly irreducible rule text, so this lever is small (**~4%**). The dominant term in a product turn is now the **last specialist call (~7-8k tok)** — accumulated search results plus the agent's own reasoning, not prompt fat. The rules themselves cannot be cut further without risking the customer-visible defects each was written for.
 - Eval battery **10/10** after redeploy; smoke turn green.
 
+### Slim product-detail tool — the raw store payload was the real cost (2026-09-23)
+Prompt text was the small lever. Decoding the specialist's own execution (`exec 1731`, via the run data) showed the actual problem in that same turn: the specialist made just **two** tool calls —
+`search_products` **1,048 chars** (~262 tok) and `product_detail` **14,553 chars** (~3,638 tok). That one observation was **93% of all tool output in the turn**, and the specialist re-sends it on every later LLM call, which is exactly why its third call jumped to 7,817 tokens.
+- **Why:** `product-detail` was still an `httpRequestTool` returning the store's raw `/api/v3/products/{id}` payload — photos, tags, `meta`, `rating_counts`, `custom_fields`, a 7k-char HTML `description` — the same class of bug the search tool had before it was slimmed.
+- **Fix:** new **`tool-product-detail`** sub-workflow (`dev/out/productDetailTool.json`) returning only what the agent uses: identity, price/stock, the exact **size-option names with their prices and stock**, rating, and the description + short description as plain text. The tool is renamed **`product_detail`** (underscored) because a `toolWorkflow` name rejects hyphens — the same lesson the search tool learned. `DETAIL_TOOL_ID` is wired like `SEARCH_TOOL_ID`.
+- **Verified before deploying:** the emitted Code-node body was run against the **live** store — a variant product, a plain product, a bad id and a non-numeric id (honest answers, no "does not exist" claim on failure).
+- **Result:** the observation went **14,553 → 1,275 chars**; the same question went **18,428 → 13,070 tokens (-29%)** and 17.4s → 16.9s. The specialist's third call fell 8,076 → 3,043.
+- **No quality loss:** the reply still names the 30ml option (৳850, in stock), the actives (4% Niacinamide + 2% Tranexamic Acid, Madewhite™), best-for skin types and how to use it — the stripped `short_description` carries the ingredient text, so the deep-dive survives.
+- Eval battery **10/10**, 0 warn, after redeploy.
+
 ---
 
 ## 6. Tradeoffs / accepted cuts
