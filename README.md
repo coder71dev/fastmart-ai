@@ -145,6 +145,10 @@ Your workflows live in the `n8n_data` volume.
 > **Symptom if you skip the overlay:** n8n starts fine and the editor works, but every store tool fails with a connection error the agent may paraphrase as a business answer (e.g. *"I couldn't find order TEST…"*). Check from inside the container:
 > `docker exec fastmart-n8n sh -c 'wget -qO- "http://fastmart-pro.test/api/v3/categories?parent_id=0" | head -c 80'`
 > JSON back = fine; `Connection refused` = you started without `-f docker-compose.dev.yml`, so `fastmart-pro.test` resolves to the container's own loopback and never reaches the store. Fix: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`.
+>
+> **The orphan warning is the same mistake, caught earlier.** `docker compose up -d` (base file only) in this directory prints *"Found orphan containers ([… fastmart-meilisearch])"* — the dev Meilisearch is not in the base file, so that invocation does not recognise it. The same base-only run recreates n8n **without** the `extra_hosts` mapping, which is the connection failure above. Confirm with `docker inspect fastmart-n8n --format '{{json .HostConfig.ExtraHosts}}'` — it must list `fastmart-pro.test:host-gateway`.
+>
+> If Meilisearch is also stopped (`docker compose ps --all` shows it `Exited`), every *keyword* search fails on top of that: the store's `/api/v4/products?keyword=` returns **HTTP 500** (Laravel Scout → Meilisearch), while the homepage grid keeps working because it lists from the DB with no keyword. So a product on the homepage can be missing from chat. The search tool reports that state as `SEARCH UNAVAILABLE …` rather than an empty result, so the agent says the search is down — it must never turn a failed search into "not in the catalogue". Both come back with the overlay command above.
 
 ## Spikes / widgets
 
