@@ -53,7 +53,16 @@ node dev/build-main.mjs
 node dev/bootstrap-creds.mjs
 ```
 
-This creates your owner account, builds the 7 workflow JSONs, creates the credentials n8n needs (OpenAI API + Postgres for chat memory), patches the JSONs with the new credential ids, and deploys everything. Your login is printed at the end.
+This creates your owner account, builds the 7 workflow JSONs, creates the credentials n8n needs (OpenAI API + Postgres for chat memory), patches the JSONs with the new credential ids, and deploys everything. Your login is printed at the end:
+
+```
+n8n login:
+  email:    admin@fastmart.local
+  password: Admin123!
+  override: N8N_OWNER_EMAIL=you@example.com N8N_OWNER_PASSWORD=yourpass
+```
+
+The OpenAI credential's Base URL is set to `https://api.commandcode.ai/provider/v1`. If you need a different provider, update it in the n8n editor (Credentials → OpenAI compatible Commandcode).
 
 > **`N8N_INSTANCE_AI_MODEL_API_KEY` must be set** in `.env` for the agent to work. If it's empty, the bootstrap will tell you. Restart n8n after setting it: `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart n8n`.
 
