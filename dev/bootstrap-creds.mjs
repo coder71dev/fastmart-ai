@@ -65,8 +65,6 @@ async function ensureOwner() {
   const after = findOwnerRow();
   if (!after?.id) throw new Error('owner setup succeeded but could not find the new account');
   console.log('owner created:', after.id);
-  console.log('  email:', email);
-  console.log('  password:', password);
   return after.id;
 }
 
@@ -205,6 +203,11 @@ async function main() {
     console.log(`${wf.name} => ${id}`);
   }
   console.log('done — all workflows deployed and active');
+  console.log('');
+  console.log('n8n login:');
+  console.log('  email:   ' + (process.env.N8N_OWNER_EMAIL || DEFAULT_EMAIL));
+  console.log('  password: ' + (process.env.N8N_OWNER_PASSWORD || DEFAULT_PASSWORD));
+  console.log('  override: N8N_OWNER_EMAIL=you@example.com N8N_OWNER_PASSWORD=yourpass');
 }
 
 main().catch(e => { console.error('ERR', e.message); process.exit(1); });
