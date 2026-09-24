@@ -28,16 +28,20 @@ function docker(...args) {
   return r.stdout.trim();
 }
 
-function findOwnerRow() {
+function queryPsql(sql) {
   const psql = spawnSync(
     'docker',
-    ['exec', '-i', 'fastmart-n8n-postgres', 'psql', '-U', 'n8n', '-d', 'fastmart_n8n', '-t', '-A', '-F', '\u0001'],
-    { encoding: 'utf8', input: `SELECT id, email FROM "user" ORDER BY "createdAt" LIMIT 1;` },
+    ['exec', '-i', 'fastmart-n8n-postgres', 'psql', '-U', 'n8n', '-d', 'fastmart_n8n', '-t', '-A'],
+    { encoding: 'utf8', input: sql },
   );
-  if (psql.status !== 0) throw new Error('could not query owner: ' + psql.stderr);
-  const line = psql.stdout.trim();
-  if (!line) return null;
-  const [id, email] = line.split('\u0001');
+  if (psql.status !== 0) throw new Error('psql failed: ' + psql.stderr);
+  return psql.stdout.trim();
+}
+
+function findOwnerRow() {
+  const id = queryPsql(`SELECT id FROM "user" ORDER BY "createdAt" LIMIT 1;`);
+  if (!id) return null;
+  const email = queryPsql(`SELECT email FROM "user" WHERE id = '${id}';`);
   return { id, hasEmail: !!email };
 }
 
@@ -73,14 +77,9 @@ function jwtSecret() {
 }
 
 function ownerUser(ownerId) {
-  const psql = spawnSync(
-    'docker',
-    ['exec', '-i', 'fastmart-n8n-postgres', 'psql', '-U', 'n8n', '-d', 'fastmart_n8n', '-t', '-A', '-F', '\u0001'],
-    { encoding: 'utf8', input: `SELECT email, password FROM "user" WHERE id = '${ownerId}';` },
-  );
-  if (psql.status !== 0) throw new Error(psql.stderr);
-  const [email, password] = psql.stdout.trim().split('\u0001');
+  const email = queryPsql(`SELECT email FROM "user" WHERE id = '${ownerId}';`);
   if (!email) throw new Error('owner not found: ' + ownerId);
+  const password = queryPsql(`SELECT password FROM "user" WHERE id = '${ownerId}';`);
   return { email, password };
 }
 
