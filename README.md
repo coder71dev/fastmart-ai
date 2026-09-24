@@ -64,13 +64,12 @@ node dev/build-main.mjs
 node dev/bootstrap-creds.mjs
 ```
 
-This creates your owner account, builds the 7 workflow JSONs, creates the credentials n8n needs (OpenAI API + Postgres for chat memory), patches the JSONs with the new credential ids, and deploys everything. Your login is printed at the end:
+This creates your owner account, builds the 7 workflow JSONs, creates the credentials n8n needs (OpenAI API + Postgres for chat memory), patches the JSONs with the new credential ids, and deploys everything. Your login is printed at the end.
 
-```
-n8n login:
-  email:    admin@fastmart.local
-  password: Admin123!
-  override: N8N_OWNER_EMAIL=you@example.com N8N_OWNER_PASSWORD=yourpass
+To use custom credentials, set env vars before running:
+
+```bash
+N8N_OWNER_EMAIL=you@example.com N8N_OWNER_PASSWORD=yourpass node dev/bootstrap-creds.mjs
 ```
 
 The OpenAI credential's Base URL is set to `https://api.commandcode.ai/provider/v1`. If you need a different provider, update it in the n8n editor (Credentials → OpenAI compatible Commandcode).
