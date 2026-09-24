@@ -66,11 +66,13 @@ node dev/bootstrap-creds.mjs
 
 This creates your owner account, builds the 7 workflow JSONs, creates the credentials n8n needs (OpenAI API + Postgres for chat memory), patches the JSONs with the new credential ids, and deploys everything. Your login is printed at the end.
 
-To use custom credentials, set env vars before running:
+To use custom credentials, set env vars **before** running bootstrap — they only affect new accounts, not existing ones:
 
 ```bash
 N8N_OWNER_EMAIL=you@example.com N8N_OWNER_PASSWORD=yourpass node dev/bootstrap-creds.mjs
 ```
+
+> Adding `N8N_OWNER_EMAIL` / `N8N_OWNER_PASSWORD` to `.env` does **not** change an existing owner. Those vars are only read by the bootstrap script. To change credentials after setup, use n8n's forgot-password flow or wipe volumes and re-run bootstrap.
 
 The OpenAI credential's Base URL is set to `https://api.commandcode.ai/provider/v1`. If you need a different provider, update it in the n8n editor (Credentials → OpenAI compatible Commandcode).
 
