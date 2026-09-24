@@ -28,41 +28,46 @@ function docker(...args) {
   return r.stdout.trim();
 }
 
-function findOwnerId() {
+function findOwnerRow() {
   const psql = spawnSync(
     'docker',
     ['exec', '-i', 'fastmart-n8n-postgres', 'psql', '-U', 'n8n', '-d', 'fastmart_n8n', '-t', '-A', '-F', '\u0001'],
-    { encoding: 'utf8', input: `SELECT id FROM "user" ORDER BY "createdAt" LIMIT 1;` },
+    { encoding: 'utf8', input: `SELECT id, email FROM "user" ORDER BY "createdAt" LIMIT 1;` },
   );
   if (psql.status !== 0) throw new Error('could not query owner: ' + psql.stderr);
-  return psql.stdout.trim() || null;
+  const line = psql.stdout.trim();
+  if (!line) return null;
+  const [id, email] = line.split('\u0001');
+  return { id, hasEmail: !!email };
 }
 
 async function ensureOwner() {
-  let ownerId = findOwnerId();
-  if (ownerId) {
-    console.log('owner exists:', ownerId);
-    return ownerId;
-  }
-  // No owner yet — create one via the setup API
+  const row = findOwnerRow();
   const email = process.env.N8N_OWNER_EMAIL || DEFAULT_EMAIL;
   const password = process.env.N8N_OWNER_PASSWORD || DEFAULT_PASSWORD;
+
+  if (row && row.hasEmail) {
+    console.log('owner exists:', row.id);
+    return row.id;
+  }
+
+  // Either no owner, or a skeleton user (n8n creates one on first boot before setup)
   console.log('creating owner account:', email);
-  const res = await fetch(`${REST}/owner`, {
+  const res = await fetch(`${REST}/owner/setup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, firstName: 'Admin', lastName: '', password }),
+    body: JSON.stringify({ email, firstName: 'Admin', lastName: 'User', password }),
   });
   const text = await res.text();
   let json;
   try { json = JSON.parse(text); } catch { json = { _raw: text.slice(0, 300) }; }
   if (res.status !== 200) throw new Error(`owner setup failed (${res.status}): ${JSON.stringify(json)}`);
-  ownerId = findOwnerId();
-  if (!ownerId) throw new Error('owner setup succeeded but could not find the new account');
-  console.log('owner created:', ownerId);
+  const after = findOwnerRow();
+  if (!after?.id) throw new Error('owner setup succeeded but could not find the new account');
+  console.log('owner created:', after.id);
   console.log('  email:', email);
   console.log('  password:', password);
-  return ownerId;
+  return after.id;
 }
 
 function jwtSecret() {
