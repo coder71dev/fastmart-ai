@@ -14,6 +14,17 @@ Get from zero to a working agent in 4 steps.
 cp .env.example .env
 ```
 
+**PowerShell (Windows):**
+
+```powershell
+$keys = @('N8N_ENCRYPTION_KEY','N8N_USER_MANAGEMENT_JWT_SECRET','SANDBOX_API_KEYS','SANDBOX_API_RUNNER_REGISTRATION_TOKEN','SANDBOX_API_RUNNER_API_KEY','SEARXNG_SECRET','POSTGRES_PASSWORD')
+$env = Get-Content .env -Raw
+foreach ($k in $keys) { $env = $env -replace "(?m)^$k=.*", "$k=$(openssl rand -hex 32)" }
+Set-Content .env $env -NoNewline
+```
+
+**Bash (Linux/macOS):**
+
 ```bash
 for v in N8N_ENCRYPTION_KEY N8N_USER_MANAGEMENT_JWT_SECRET SANDBOX_API_KEYS \
          SANDBOX_API_RUNNER_REGISTRATION_TOKEN SANDBOX_API_RUNNER_API_KEY \
