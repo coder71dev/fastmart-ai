@@ -76,7 +76,7 @@ N8N_OWNER_EMAIL=you@example.com N8N_OWNER_PASSWORD=yourpass node dev/bootstrap-c
 
 The OpenAI credential's Base URL is set to `https://api.commandcode.ai/provider/v1`. If you need a different provider, update it in the n8n editor (Credentials → OpenAI compatible Commandcode).
 
-> **`N8N_INSTANCE_AI_MODEL_API_KEY` must be set** in `.env` for the agent to work. If it's empty, the bootstrap will tell you. Restart n8n after setting it: `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart n8n`.
+> **`N8N_INSTANCE_AI_MODEL_API_KEY` must be set** in `.env` for the agent to work. If it's empty, the bootstrap will tell you. After changing it, recreate the container: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d n8n` — a `restart` reuses the old environment and silently keeps the stale value.
 
 ### What just happened
 
@@ -108,9 +108,8 @@ Start and bootstrap:
 
 ```bash
 docker compose up -d
-node dev/build-workflows.mjs
-node dev/build-main.mjs
 STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
+STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
 node dev/bootstrap-creds.mjs
 ```
 
@@ -132,6 +131,63 @@ docker exec fastmart-n8n-postgres pg_dump -U n8n fastmart_n8n | gzip > /www/back
 ```
 
 > **VPS must be KVM/Xen** — the sandbox runner starts its own Docker daemon, which fails under OpenVZ/LXC.
+
+---
+
+## Deploy changes to production
+
+After you `git pull` new code, rebuild and redeploy **on the VPS** (the deploy script talks to `localhost:5678` and reads the owner password via `docker exec`, so it only works on the n8n host):
+
+```bash
+cd /www/wwwroot/ai.perfectobd.com
+git pull
+
+# rebuild with the LIVE store host baked into the tool nodes
+STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
+STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
+
+node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json dev/out/productDiscovery.json \
+  dev/out/supportSpecialist.json dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
+```
+
+`dev/deploy.mjs` matches workflows **by name** and re-activates them, so it overwrites the old versions in place — no need to delete anything first.
+
+> **401 on deploy?** `dev/deploy.mjs` hardcodes one owner UUID (line 11). On the VPS the owner is a different user. Read the real one and update it:
+> ```bash
+> docker exec fastmart-n8n-postgres psql -U n8n -d fastmart_n8n -Atc 'SELECT id FROM "user" LIMIT 1'
+> ```
+
+Verify it landed:
+
+```bash
+node dev/eval-harness.mjs --webhook https://ai.perfectobd.com/webhook/spike/agent-chat \
+  --store https://perfectobd.com    # expect pass=10 fail=0
+```
+
+### Changing the model on production
+
+The model reaches the system two different ways — they need different steps:
+
+| What | Gets the model from | To change it |
+|---|---|---|
+| **n8n Assistant** (the chat panel) | `.env` only | edit `.env`, then `docker compose up -d n8n` |
+| **agent-chat workflows** | baked in at build time | rebuild + `dev/deploy.mjs` |
+
+```bash
+# n8n Assistant — .env edit, then RECREATE the container
+docker compose up -d n8n
+docker exec fastmart-n8n printenv | grep N8N_INSTANCE_AI   # verify
+```
+
+> `docker compose restart n8n` reuses the environment the container was **created** with, so it silently keeps the old value. Use `up -d` (or `--force-recreate`). If the env is right but the Assistant still uses the old provider, a stored credential is overriding it — check Credentials → `AI Assistant model` in the n8n editor.
+
+```bash
+# the workflows — rebuild and redeploy
+STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
+node dev/deploy.mjs dev/out/agentChat.json
+```
+
+> The workflows read the endpoint from the credential's **Base URL** field, not `.env`. Switching providers means changing that field too (n8n editor → Credentials).
 
 ---
 
@@ -193,6 +249,11 @@ node dev/eval-harness.mjs
 ```
 
 > **Store host** is baked into tool nodes at build time. For a VPS build: `STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs`
+
+> **Tool ids change when the two tool workflows are redeployed.** After deploying `searchTool.json` / `productDetailTool.json`, rebuild the specialists with the ids that run printed, or product discovery calls a stale id:
+> ```bash
+> SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id> node dev/build-workflows.mjs
+> ```
 
 > **Model** is also baked at build time, but the provider is an env choice: `MODEL_PROVIDER=gemini node dev/build-main.mjs` switches to Gemini. See `dev/model-config.mjs`.
 
