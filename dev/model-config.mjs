@@ -10,10 +10,12 @@
 // MODEL overrides just the model id inside the chosen provider (e.g.
 // MODEL=google/gemini-3.7-flash keeps Command Code but changes the model).
 //
-// n8n credential ids are PER-INSTANCE. dev/sync.mjs resolves the right one by
-// credential NAME and passes MODEL_CRED_ID / MODEL_CRED_NAME, so this literal is
-// only a fallback for a hand-run build. On a fresh install, run dev/sync.mjs
-// (or pass the id from the n8n editor).
+// Credential names are instance-specific. Read from .n8n-credentials.json
+// (created once by the user). Env vars override everything.
+import fs from 'node:fs';
+let credConfig = {};
+try { credConfig = JSON.parse(fs.readFileSync('.n8n-credentials.json', 'utf8')); } catch {}
+
 const PROVIDERS = {
   // Command Code's gateway. OpenAI wire, so the endpoint lives in the
   // credential's "Base URL" field (https://api.commandcode.ai/provider/v1) —
@@ -24,7 +26,10 @@ const PROVIDERS = {
     param: 'model',
     model: 'deepseek/deepseek-v4.1-flash',
     credKey: 'openAiApi',
-    cred: { id: 'mlmhRJXXejblFl1S', name: 'OpenAI compatible Commandcode' },
+    cred: {
+      id: process.env.MODEL_CRED_ID || credConfig.MODEL_CRED_ID || 'mlmhRJXXejblFl1S',
+      name: process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || 'OpenAI compatible Commandcode',
+    },
   },
   // Gemini direct via n8n's own Google Gemini node.
   gemini: {

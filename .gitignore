@@ -1,5 +1,6 @@
 # Secrets — never commit (local only)
 .env
+.n8n-credentials.json
 dev/cred-pg.json
 n8n_cookies.txt
 

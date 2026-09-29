@@ -33,12 +33,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REST = 'http://localhost:5678/rest';
 const CHECK_ONLY = process.argv.includes('--check');
 
-const DEFAULT_MODEL_CRED = 'OpenAI compatible Commandcode';
-const MODEL_CRED_FALLBACK = 'OpenAi account';
-// The postgres credential was created by bootstrap-creds.mjs with a slightly
-// different name depending on when it ran. Try both.
-const DEFAULT_PG_CRED = 'fastmart Postgres (n8n DB)';
-const PG_CRED_FALLBACK = 'fastmart Postgres (fastmart_ai DB)';
+// Credential names are instance-specific. sync.mjs reads them from a config
+// file (written once by the user), falling back to the names bootstrap-creds.mjs
+// uses on a fresh install. Override any of them with env vars.
+import { readFileSync } from 'node:fs';
+const CRED_FILE = resolve(HERE, '..', '.n8n-credentials.json');
+let credConfig = {};
+try { credConfig = JSON.parse(readFileSync(CRED_FILE, 'utf8')); } catch {}
+
+const MODEL_CRED_NAME = process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || 'OpenAI compatible Commandcode';
+const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
 
 // Deployment order = dependency order. A workflow that is called as a tool must
 // EXIST before the caller is built, because the caller needs its id.
@@ -96,18 +100,18 @@ function credentialsByName() {
 }
 
 // One credential by name, failing loudly with the alternatives if it's absent.
-function resolveCred(envId, envName, defaultName, map) {
-  if (envId) return { id: envId, name: envName || defaultName };
-  const id = map.get(envName || defaultName);
+function resolveCred(envId, name, map) {
+  if (envId) return { id: envId, name };
+  const id = map.get(name);
   if (!id) {
+    const fix = name.includes('Postgres') ? 'PG_CRED_NAME' : 'MODEL_CRED_NAME';
     throw new Error(
-      `no credential named "${envName || defaultName}" on this instance.\n` +
+      `no credential named "${name}" on this instance.\n` +
       `  available: ${[...map.keys()].join(', ') || '(none)'}\n` +
-      '  create it in n8n (Credentials) or pass ' +
-      (defaultName === DEFAULT_MODEL_CRED ? 'MODEL_CRED_ID / MODEL_CRED_NAME' : 'PG_CRED_ID / PG_CRED_NAME') + '.',
+      `  fix: create it in n8n, or set ${fix} in .n8n-credentials.json (or pass it as env).`,
     );
   }
-  return { id, name: envName || defaultName };
+  return { id, name };
 }
 
 // ---- deploy (delegates to deploy.mjs so the auth logic lives in one place) ---
@@ -231,16 +235,10 @@ async function main() {
   }
 
   const creds = credentialsByName();
-  // Try the default name first, then a fallback. The credential was created at
-  // different times with slightly different names — both are valid.
-  let modelCred;
-  try { modelCred = resolveCred(process.env.MODEL_CRED_ID, process.env.MODEL_CRED_NAME, DEFAULT_MODEL_CRED, creds); }
-  catch (e) { modelCred = resolveCred(process.env.MODEL_CRED_ID, process.env.MODEL_CRED_NAME, MODEL_CRED_FALLBACK, creds); }
-  // The postgres credential was created by bootstrap-creds.mjs with slightly
-  // different names depending on when it ran — try both before failing.
-  let pgCred;
-  try { pgCred = resolveCred(process.env.PG_CRED_ID, process.env.PG_CRED_NAME, DEFAULT_PG_CRED, creds); }
-  catch (e) { pgCred = resolveCred(process.env.PG_CRED_ID, process.env.PG_CRED_NAME, PG_CRED_FALLBACK, creds); }
+  // Credential names come from .n8n-credentials.json (or env override).
+  // No guessing — the user sets the names once and the whole pipeline uses them.
+  const modelCred = resolveCred(process.env.MODEL_CRED_ID, MODEL_CRED_NAME, creds);
+  const pgCred = resolveCred(process.env.PG_CRED_ID, PG_CRED_NAME, creds);
   const ids = {
     MODEL_CRED_ID: modelCred.id,
     MODEL_CRED_NAME: modelCred.name,

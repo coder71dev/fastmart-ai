@@ -7,12 +7,13 @@ import { MODEL_NODE, modelNodeFields } from './model-config.mjs';
 import { stableId } from './node-id.mjs';
 
 const OUT = 'dev/out';
-// Chat memory lives in n8n's own Postgres. The credential id is per-instance:
-// dev/sync.mjs resolves it by name and passes PG_CRED_ID (or PG_CRED_NAME).
-const PG_CRED = {
-  id: process.env.PG_CRED_ID || 'EsaKbJSqeQFEMuwd',
-  name: process.env.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)',
-};
+// Credential names are instance-specific. Read from .n8n-credentials.json
+// (created once by the user), falling back to the names bootstrap-creds uses.
+let credConfig = {};
+try { credConfig = JSON.parse(fs.readFileSync('dev/../.n8n-credentials.json', 'utf8')); } catch {}
+const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
+const PG_CRED_ID = process.env.PG_CRED_ID || credConfig.PG_CRED_ID || 'EsaKbJSqeQFEMuwd';
+const PG_CRED = { id: PG_CRED_ID, name: PG_CRED_NAME };
 
 // Ids produced by dev/deploy.mjs — resolved LIVE by dev/sync.mjs, which deploys
 // each workflow first and reads its real id back from the instance. The literals
