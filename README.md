@@ -132,56 +132,75 @@ docker exec fastmart-n8n-postgres pg_dump -U n8n fastmart_n8n | gzip > /www/back
 
 ---
 
-## Deploy changes to production
+## Deploy changes to production (safe runbook)
 
-After you `git pull` new code, redeploy **on the VPS** (the deploy scripts talk to `localhost:5678` and read the owner from n8n's DB, so they only work on the n8n host):
+`sync.mjs` is the deploy command. It resolves every credential and workflow id from the **target instance**, deploys in dependency order, then verifies every reference before reporting success. This runbook wraps it in backup + smoke-test steps so you know nothing broke before you leave the terminal.
+
+### Pre-deploy (run on the VPS)
 
 ```bash
 cd /www/wwwroot/ai.perfectobd.com
 git pull
+
+# 1. backup the database BEFORE touching anything
+docker exec fastmart-n8n-postgres pg_dump -U n8n fastmart_n8n | gzip > /www/backup/n8n-pre-deploy-$(date +%F-%H%M).sql.gz
+ls -lh /www/backup/n8n-pre-deploy-*.sql.gz | tail -1   # confirm it's there
+
+# 2. check the env is right (sync reads these; a stale STORE_BASE_URL bakes the wrong host into every tool node)
+grep -E '^(STORE_BASE_URL|N8N_HOST|N8N_INSTANCE_AI_MODEL_API_KEY)=' .env
+# expected: STORE_BASE_URL=https://perfectobd.com  N8N_HOST=ai.perfectobd.com  N8N_INSTANCE_AI_MODEL_API_KEY=<your key>
+
+# 3. verify-only first — catches bad credentials / missing workflows / dangling references WITHOUT deploying
+STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs --check
+```
+
+The `--check` output resolves credentials by name and reads every workflow id from the instance, then says whether the built main workflow's references all resolve. If it passes, the deploy is safe to run. If it fails, the error tells you exactly what's missing — fix it before deploying.
+
+### Deploy
+
+```bash
+# 4. one command — builds + deploys tool → specialist → main, verifies
 STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs
 ```
 
-That one command is the whole deploy. It builds and deploys in dependency order (tool sub-workflows → specialists → main agent), **reads every workflow id back from the instance** and injects it into the next build, resolves credentials by name, then verifies that every tool reference and credential resolves before reporting success. Nothing to paste, and nothing silently pointing at the wrong workflow.
+The last line should be `verify OK: 6 tool references + 2 credentials resolve on this instance`. If it's anything else, the deploy stopped before the broken workflow was activated.
+
+### Post-deploy smoke tests
 
 ```bash
-node dev/sync.mjs --check     # verify only, deploy nothing
-```
-
-**If it fails, it fails before reporting success** — a bad tool id or missing credential is a hard error, not a broken production chat.
-
-<details>
-<summary>Manual steps (only if you are not using sync.mjs)</summary>
-
-```bash
-STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
-STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
-node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json dev/out/productDiscovery.json \
-  dev/out/supportSpecialist.json dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
-```
-
-`dev/deploy.mjs` matches workflows **by name** and re-activates them, so it overwrites the old versions in place. It refuses to create a workflow whose name is new (a rename would orphan every id pointing at it) — pass `ALLOW_NEW_WORKFLOW=1` if you really mean it.
-
-Because the builders cannot know your instance's ids, the manual path needs them passed in, or the orchestrator will point at workflows that don't exist:
-
-```bash
-SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id> node dev/build-workflows.mjs
-PRODUCT_DISCOVERY_ID=<id> SUPPORT_SPECIALIST_ID=<id> \
-  CART_SPECIALIST_ID=<id> ORDER_SPECIALIST_ID=<id> \
-  PG_CRED_ID=<id> MODEL_CRED_ID=<id> node dev/build-main.mjs
-```
-
-`node dev/read-wf.mjs "agent-chat (prod webhook)"` prints a workflow's id, nodes and connections straight from the API — the quickest way to get those values.
-</details>
-
-> **Deploy auth** — both scripts find the owner themselves (`roleSlug = 'global:owner'` in n8n's DB), so the same command works locally and on the VPS. Override with `N8N_OWNER_ID=<uuid>`.
-
-Verify it landed:
-
-```bash
+# 5. verify the webhook is live and the agent answers correctly
 node dev/eval-harness.mjs --webhook https://ai.perfectobd.com/webhook/spike/agent-chat \
-  --store https://perfectobd.com    # expect pass=10 fail=0
+  --store https://perfectobd.com
+# expect pass=14  fail=0  (or only the 1 search-dependent soft warn)
+
+# 6. spot-check one workflow in the n8n UI — is it active and does its node graph look right?
+node dev/read-wf.mjs "agent-chat (prod webhook)"
+# id, nodes and connections should match what you expect; active=true
 ```
+
+### If something broke
+
+```bash
+# restore the pre-deploy snapshot
+docker exec -i fastmart-n8n-postgres psql -U n8n fastmart_n8n < /www/backup/n8n-pre-deploy-*.sql.gz
+docker compose restart n8n
+```
+
+The restore brings back the old workflows, credentials (encrypted with the same `N8N_ENCRYPTION_KEY`), memory tables, data tables, and canvas groups. The webhook keeps responding immediately — n8n doesn't need a rebuild, it re-reads the DB on start.
+
+### What survives a redeploy vs. what doesn't
+
+| Artifact | Survives redeploy | Survives DB restore |
+|---|---|---|
+| Workflows (all 7) | yes — patch by name | yes (restored) |
+| Credentials (encrypted) | yes | yes (same `N8N_ENCRYPTION_KEY`) |
+| Chat memory (`chat_memory_fastmart`) | yes | yes |
+| Token-usage Data Table | yes | yes |
+| Execution history | yes | yes |
+| Canvas groups (n8n UI layout) | yes — self-healed by deploy.mjs | yes |
+| Owner account | yes | yes |
+
+Nothing is lost by a redeploy; `sync.mjs` is a patch, not a wipe. The only destructive operation is `docker compose down -v` (wipes the volume).
 
 ### Changing the model on production
 
@@ -190,7 +209,7 @@ The model reaches the system two different ways — they need different steps:
 | What | Gets the model from | To change it |
 |---|---|---|
 | **n8n Assistant** (the chat panel) | `.env` only | edit `.env`, then `docker compose up -d n8n` |
-| **agent-chat workflows** | baked in at build time | rebuild + `dev/deploy.mjs` |
+| **agent-chat workflows** | baked in at build time | `MODEL=<model> STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs` |
 
 ```bash
 # n8n Assistant — .env edit, then RECREATE the container
@@ -201,9 +220,8 @@ docker exec fastmart-n8n printenv | grep N8N_INSTANCE_AI   # verify
 > `docker compose restart n8n` reuses the environment the container was **created** with, so it silently keeps the old value. Use `up -d` (or `--force-recreate`). If the env is right but the Assistant still uses the old provider, a stored credential is overriding it — check Credentials → `AI Assistant model` in the n8n editor.
 
 ```bash
-# the workflows — rebuild and redeploy
-STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
-node dev/deploy.mjs dev/out/agentChat.json
+# the workflows — one command
+MODEL=google/gemini-2.5-pro STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs
 ```
 
 > The workflows read the endpoint from the credential's **Base URL** field, not `.env`. Switching providers means changing that field too (n8n editor → Credentials).
