@@ -10,8 +10,10 @@
 // MODEL overrides just the model id inside the chosen provider (e.g.
 // MODEL=google/gemini-3.7-flash keeps Command Code but changes the model).
 //
-// NOTE: n8n credential ids are per-instance. The ids below are this instance's;
-// on a fresh install take them from the n8n UI and pass MODEL_CRED_ID/_NAME.
+// n8n credential ids are PER-INSTANCE. dev/sync.mjs resolves the right one by
+// credential NAME and passes MODEL_CRED_ID / MODEL_CRED_NAME, so this literal is
+// only a fallback for a hand-run build. On a fresh install, run dev/sync.mjs
+// (or pass the id from the n8n editor).
 const PROVIDERS = {
   // Command Code's gateway. OpenAI wire, so the endpoint lives in the
   // credential's "Base URL" field (https://api.commandcode.ai/provider/v1) —

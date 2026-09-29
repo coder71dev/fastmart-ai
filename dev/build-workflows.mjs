@@ -4,13 +4,15 @@
 import fs from 'node:fs';
 import * as P from './prompts.js';
 import { MODEL_NODE, modelNodeFields } from './model-config.mjs';
+import { stableId } from './node-id.mjs';
 
 const OUT = 'dev/out';
 fs.mkdirSync(OUT, { recursive: true });
 
-const rand = () => Math.random().toString(36).slice(2, 8);
-
-const node = (o) => ({ id: o.id || rand(), disabled: false, ...o });
+// Node ids are DERIVED FROM THE NODE NAME, not random — see dev/node-id.mjs.
+// A random id on every build breaks canvas groups and any other n8n-side
+// reference to the old id when the workflow is PATCHed.
+const node = (o) => ({ id: stableId(o.name), disabled: false, ...o });
 const pos = (x, y) => [x, y];
 
 // Sub-workflow id for the slim search tool (assigned by n8n on deploy). On a

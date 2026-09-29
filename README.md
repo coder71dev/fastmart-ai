@@ -59,12 +59,11 @@ Wait about 20 seconds for n8n to finish its first-run migrations.
 ### 4. Build and deploy everything
 
 ```bash
-node dev/build-workflows.mjs
-node dev/build-main.mjs
-node dev/bootstrap-creds.mjs
+node dev/bootstrap-creds.mjs      # first time only: creates the owner + credentials
+node dev/sync.mjs                 # build + deploy all 7 workflows
 ```
 
-This creates your owner account, builds the 7 workflow JSONs, creates the credentials n8n needs (OpenAI API + Postgres for chat memory), patches the JSONs with the new credential ids, and deploys everything. Your login is printed at the end.
+`bootstrap-creds.mjs` is a first-run script (it creates the owner account and the credentials). `sync.mjs` is the everyday command: it deploys in dependency order, reads each workflow's real id back from the instance, and verifies every reference before reporting success. Your login is printed by `bootstrap-creds.mjs`.
 
 To use custom credentials, set env vars **before** running bootstrap — they only affect new accounts, not existing ones:
 
@@ -108,9 +107,8 @@ Start and bootstrap:
 
 ```bash
 docker compose up -d
-STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
-STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
 node dev/bootstrap-creds.mjs
+STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs
 ```
 
 Point the widget: `window.__PERFECTO_N8N_CHAT_WEBHOOK = 'https://ai.perfectobd.com/webhook/spike/agent-chat';`
@@ -136,23 +134,47 @@ docker exec fastmart-n8n-postgres pg_dump -U n8n fastmart_n8n | gzip > /www/back
 
 ## Deploy changes to production
 
-After you `git pull` new code, rebuild and redeploy **on the VPS** (the deploy script talks to `localhost:5678` and reads the owner password via `docker exec`, so it only works on the n8n host):
+After you `git pull` new code, redeploy **on the VPS** (the deploy scripts talk to `localhost:5678` and read the owner from n8n's DB, so they only work on the n8n host):
 
 ```bash
 cd /www/wwwroot/ai.perfectobd.com
 git pull
+STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs
+```
 
-# rebuild with the LIVE store host baked into the tool nodes
+That one command is the whole deploy. It builds and deploys in dependency order (tool sub-workflows → specialists → main agent), **reads every workflow id back from the instance** and injects it into the next build, resolves credentials by name, then verifies that every tool reference and credential resolves before reporting success. Nothing to paste, and nothing silently pointing at the wrong workflow.
+
+```bash
+node dev/sync.mjs --check     # verify only, deploy nothing
+```
+
+**If it fails, it fails before reporting success** — a bad tool id or missing credential is a hard error, not a broken production chat.
+
+<details>
+<summary>Manual steps (only if you are not using sync.mjs)</summary>
+
+```bash
 STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs
 STORE_BASE_URL=https://perfectobd.com node dev/build-main.mjs
-
 node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json dev/out/productDiscovery.json \
   dev/out/supportSpecialist.json dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
 ```
 
-`dev/deploy.mjs` matches workflows **by name** and re-activates them, so it overwrites the old versions in place — no need to delete anything first.
+`dev/deploy.mjs` matches workflows **by name** and re-activates them, so it overwrites the old versions in place. It refuses to create a workflow whose name is new (a rename would orphan every id pointing at it) — pass `ALLOW_NEW_WORKFLOW=1` if you really mean it.
 
-> **Deploy auth** — `dev/deploy.mjs` finds the owner itself (reads `roleSlug = 'global:owner'` from n8n's DB), so the same command works locally and on the VPS. Override with `N8N_OWNER_ID=<uuid>` if you need a specific account.
+Because the builders cannot know your instance's ids, the manual path needs them passed in, or the orchestrator will point at workflows that don't exist:
+
+```bash
+SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id> node dev/build-workflows.mjs
+PRODUCT_DISCOVERY_ID=<id> SUPPORT_SPECIALIST_ID=<id> \
+  CART_SPECIALIST_ID=<id> ORDER_SPECIALIST_ID=<id> \
+  PG_CRED_ID=<id> MODEL_CRED_ID=<id> node dev/build-main.mjs
+```
+
+`node dev/read-wf.mjs "agent-chat (prod webhook)"` prints a workflow's id, nodes and connections straight from the API — the quickest way to get those values.
+</details>
+
+> **Deploy auth** — both scripts find the owner themselves (`roleSlug = 'global:owner'` in n8n's DB), so the same command works locally and on the VPS. Override with `N8N_OWNER_ID=<uuid>`.
 
 Verify it landed:
 
@@ -198,7 +220,9 @@ node dev/deploy.mjs dev/out/agentChat.json
 | `dev/prompts.js` | All system prompts and tool descriptions |
 | `dev/build-workflows.mjs` | Builds the 4 specialist + 2 tool workflows |
 | `dev/build-main.mjs` | Builds the main agent workflow |
-| `dev/bootstrap-creds.mjs` | Creates credentials and deploys all workflows on a fresh instance |
+| `dev/sync.mjs` | **The deploy command** — build + deploy in dependency order, resolving every id from the instance, then verify |
+| `dev/read-wf.mjs` | Prints a workflow's real id, nodes and connections from the n8n API |
+| `dev/bootstrap-creds.mjs` | First run only: creates the owner account and credentials |
 | `dev/deploy.mjs` | Deploys workflow JSONs (auto-detects the n8n owner) |
 | `dev/eval-harness.mjs` | Eval battery — 14 test cases (`--group hitl` for the human-in-the-loop ones) |
 | `dev/prod-bench.mjs` | Latency and token cost benchmark |
@@ -233,28 +257,18 @@ The `custom/` prefix on the model id (`N8N_INSTANCE_AI_MODEL`) is required — w
 ```bash
 # 1. Edit prompts or tools in dev/prompts.js or the build scripts
 
-# 2. Rebuild + deploy
-node dev/build-workflows.mjs && node dev/build-main.mjs
-node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json   # prints tool ids
-SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id> node dev/build-workflows.mjs        # rebuild with tool ids
-node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json \
-  dev/out/productDiscovery.json dev/out/supportSpecialist.json \
-  dev/out/cartSpecialist.json dev/out/orderSpecialist.json dev/out/agentChat.json
+# 2. Rebuild + deploy (one command, handles all the ids)
+node dev/sync.mjs
 
 # 3. Run the eval battery
 node dev/eval-harness.mjs
 ```
 
-> **Store host** is baked into tool nodes at build time. For a VPS build: `STORE_BASE_URL=https://perfectobd.com node dev/build-workflows.mjs`
+> **Store host** is baked into the tool nodes at build time. For a VPS build: `STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs`
 
-> **Tool ids change when the two tool workflows are redeployed.** After deploying `searchTool.json` / `productDetailTool.json`, rebuild the specialists with the ids that run printed, or product discovery calls a stale id:
-> ```bash
-> SEARCH_TOOL_ID=<id> DETAIL_TOOL_ID=<id> node dev/build-workflows.mjs
-> ```
+> **Model** is baked at build time, but the provider is an env choice: `MODEL_PROVIDER=gemini node dev/sync.mjs` switches to Gemini. See `dev/model-config.mjs`.
 
-> **Model** is also baked at build time, but the provider is an env choice: `MODEL_PROVIDER=gemini node dev/build-main.mjs` switches to Gemini. See `dev/model-config.mjs`.
-
-> **Rebuilt locally? Re-patch the credentials.** The build scripts emit the *production* credential ids. On a local/other instance the ids differ, so `node dev/deploy.mjs dev/out/agentChat.json` right after a rebuild breaks chat memory (`Error in sub-node PG Memory`). Run `node dev/bootstrap-creds.mjs` after the build — it rewrites the ids to your instance's and redeploys.
+`sync.mjs` exists because the builders cannot know your instance's ids. It deploys each workflow, reads the id n8n assigned it, and passes that into the next build — so tool ids, specialist ids and credential ids are always this instance's, and it verifies every reference before it says "done". Deploying a hand-built JSON without it is what produces a 500 in the widget (`Error in workflow`) and `Error in sub-node PG Memory`.
 
 ---
 

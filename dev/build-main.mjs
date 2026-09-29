@@ -4,21 +4,32 @@
 import fs from 'node:fs';
 import * as P from './prompts.js';
 import { MODEL_NODE, modelNodeFields } from './model-config.mjs';
+import { stableId } from './node-id.mjs';
 
 const OUT = 'dev/out';
-const PG_CRED = { id: 'EsaKbJSqeQFEMuwd', name: 'fastmart Postgres (fastmart_ai DB)' };
+// Chat memory lives in n8n's own Postgres. The credential id is per-instance:
+// dev/sync.mjs resolves it by name and passes PG_CRED_ID (or PG_CRED_NAME).
+const PG_CRED = {
+  id: process.env.PG_CRED_ID || 'EsaKbJSqeQFEMuwd',
+  name: process.env.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)',
+};
 
-// ids produced by dev/deploy.mjs
+// Ids produced by dev/deploy.mjs — resolved LIVE by dev/sync.mjs, which deploys
+// each workflow first and reads its real id back from the instance. The literals
+// below are only a last-resort fallback for a hand-run build; they belong to the
+// instance they were copied from and will be wrong anywhere else.
 const SPEC = {
-  productDiscovery: 'DQ39wgxL370oX15x',
-  supportSpecialist: '84zzrn7RoIof8lhC',
-  cartSpecialist: '1epRnYl6wTXaIxMf',
-  orderSpecialist: 'TMlk5KZqAZB5ysy7',
+  productDiscovery: process.env.PRODUCT_DISCOVERY_ID || 'DQ39wgxL370oX15x',
+  supportSpecialist: process.env.SUPPORT_SPECIALIST_ID || '84zzrn7RoIof8lhC',
+  cartSpecialist: process.env.CART_SPECIALIST_ID || '1epRnYl6wTXaIxMf',
+  orderSpecialist: process.env.ORDER_SPECIALIST_ID || 'TMlk5KZqAZB5ysy7',
 };
 const N8N = { spec: SPEC };
 
-const rand = () => Math.random().toString(36).slice(2, 8);
-const node = (o) => ({ id: o.id || rand(), disabled: false, ...o });
+// Node ids are DERIVED FROM THE NODE NAME, not random — see dev/node-id.mjs.
+// A random id on every build breaks canvas groups and any other n8n-side
+// reference to the old id when the workflow is PATCHed.
+const node = (o) => ({ id: o.id || stableId(o.name), disabled: false, ...o });
 const pos = (x, y) => [x, y];
 
 const WEBHOOK_ID = '9c2a1d7e-4b4f-4d9e-9c0a-1f2a3b4c5d6e';
