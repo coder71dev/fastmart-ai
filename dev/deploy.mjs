@@ -8,13 +8,25 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 
 const REST = 'http://localhost:5678/rest';
-const OWNER_ID = '05933423-6fe4-4741-8988-8e28fd173da7';
 
 function docker(...args) {
   const r = spawnSync('docker', args, { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(r.stderr || r.stdout);
   return r.stdout.trim();
 }
+// The owner id differs per instance (local != VPS) and used to be hardcoded here —
+// which is what caused the 401 on deploy. Prefer an explicit N8N_OWNER_ID, else read
+// the global owner straight from n8n's DB.
+function psql(query) {
+  const r = spawnSync('docker', ['exec', '-i', 'fastmart-n8n-postgres', 'psql', '-U', 'n8n', '-d', 'fastmart_n8n', '-t', '-A', '-c', query], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(r.stderr || 'psql failed');
+  return (r.stdout || '').trim();
+}
+const OWNER_ID = process.env.N8N_OWNER_ID
+  || psql(`SELECT id FROM "user" WHERE "roleSlug" = 'global:owner' LIMIT 1;`)
+  || psql('SELECT id FROM "user" LIMIT 1;');
+if (!OWNER_ID) throw new Error('could not determine the n8n owner user id (set N8N_OWNER_ID)');
+
 function jwtSecret() {
   const s = docker('exec', 'fastmart-n8n', 'printenv', 'N8N_USER_MANAGEMENT_JWT_SECRET');
   if (!s) throw new Error('empty jwt secret');

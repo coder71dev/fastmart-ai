@@ -23,9 +23,12 @@ Content-Type: application/json
 {
   "message": "find me a serum under 2000 taka",   // user text (required)
   "conversation_id": "tmp-widget-<uuid>",           // optional; widget keeps it in localStorage
-  "profile": { "skin": "Oily", "concern": "Acne", "budget": "Under Tk 1500" } // optional, quiz
+  "profile": { "skin": "Oily", "concern": "Acne", "budget": "Under Tk 1500" }, // optional, quiz
+  "action": { "type": "variant-selected", "product_id": 100, "variant": "45ml", "quantity": 1 } // optional; resumes a human-in-the-loop step
 }
 ```
+
+`action` is how the widget answers a `variant-picker` / `approval` block (see **Human-in-the-loop** below). Omit it for a normal turn.
 
 ## Response (HTTP 200, `application/json`)
 
@@ -42,7 +45,7 @@ Content-Type: application/json
 - `token_usage` is **always `null`** — re-verified on n8n `2.40.5` (2026-09-22, the current `latest` image) and it was `null` on `2.37.6` before that, so it is a platform limit rather than a bug we can fix in the workflow: the Agent node's output is only `{output, intermediateSteps}` (this version never emits `tokenUsage`), and n8n's expression data proxy cannot read the `ai_languageModel` sub-node that actually holds the per-call usage — `$('OpenAI Chat Model')`, `$node[...]` and `.all()`/`.first()` all throw `No data found from 'main' input`. The field is kept in the response so a future n8n that does expose it needs no contract change. **For real per-turn cost, read n8n's own Postgres** (`metadata.tracing['llm.tokens.in'|'out']` per execution), which is what `dev/prod-bench.mjs` does — it sums the orchestrator **and** its child specialist executions.
 - `reply` may be empty when `blocks` is non-empty (a blocks-only turn, e.g. cart table).
 - `blocks` types are the widget's existing `OutputBlock` union:
-  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `order-status`.
+  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `order-status` | `variant-picker` | `approval`.
 
 ### `order-status` (order tracking)
 
@@ -63,6 +66,53 @@ Emitted when the order specialist finds an order. **It carries no personal data*
 ```
 
 The widget maps `status` onto a 5-step fulfilment flow (Order Placed → Confirmed → **Packaging** → Out for Delivery → Delivered; `cancelled`/`returned`/`failed` render as a terminal state). Keep that map in step with the store's own `delivery_status` values — they are the store's, not ours (`pending`, `confirmed`, `hold`, `packaging`, `picked_up`, `on_the_way`, `shipped`, `delivered` — confirmed against the `orders` table). The ETA line is hidden once the order is delivered or terminal.
+
+## Human-in-the-loop (variant-picker / approval)
+
+Two things pause a cart action and hand it to the customer. Both work the same way: the agent ends its turn with a blocks-only answer, the widget renders buttons, and the customer's tap starts the **next** turn carrying an `action` that resumes the exact call. The cart tool does not run until the customer acts.
+
+This is the in-widget equivalent of n8n's *Human review for tools*. n8n's own version needs an external channel (Slack/Telegram/…); here the customer is the reviewer, inside the widget.
+
+### When the agent asks
+
+| Situation | Block | META footer the agent emits |
+|---|---|---|
+| Product has size options and the customer hasn't chosen one | `variant-picker` | `META_VARIANT_PRODUCT_ID: <id>` + `[BLOCK variant-picker]` |
+| Not a clear single-product buy (ideas / "add some random products"), 2+ products at once, or it would replace the cart | `approval` | `META_APPROVAL_JSON: {…}` + `[BLOCK approval]` |
+
+A single product the customer clearly names and asks to buy is added directly — no gate. The agent prompt carries the exact rules.
+
+### Blocks
+
+```jsonc
+// variant-picker — options are re-fetched live from /api/v3/products/{id} (ground truth)
+{ "type": "variant-picker", "productId": 100, "productName": "Sheglam Good Grip Hydrating Primer",
+  "image": "uploads/all/file_xxx.jpg",
+  "options": [ { "name": "15ml", "price": 700, "qty": 5 }, { "name": "45ml", "price": 1250, "qty": 4 } ] }
+
+// approval — items are exactly the cart-add(s) the agent will run on approve
+{ "type": "approval", "action": "cart-add", "summary": "Add 2 items to your cart",
+  "items": [ { "product_id": 100, "name": "Sheglam Good Grip", "variant": "45ml", "quantity": 1, "price": 1250 } ],
+  "approveLabel": "Add to cart", "denyLabel": "Cancel" }
+```
+
+### What the widget sends back
+
+The tap posts a normal turn with a structured `action` (same `conversation_id`, so the cart and memory stay put):
+
+```jsonc
+// a variant option was tapped -> the agent calls cart-add with these exact values
+{ "type": "variant-selected", "product_id": 100, "variant": "45ml", "quantity": 1 }
+
+// approve / decline -> the agent runs (or skips) each item in `items`
+{ "type": "approval", "decision": "approve", "action": "cart-add",
+  "items": [ { "product_id": 100, "name": "Sheglam Good Grip", "variant": "45ml", "quantity": 1 } ] }
+{ "type": "approval", "decision": "decline", "items": [ … ] }
+```
+
+The workflow's `Prepare Input` node turns `action` into a `CUSTOMER ACTION: …` line in the agent's context, so the resumed turn executes the add verbatim instead of re-deciding. On decline the agent acknowledges and adds nothing.
+
+> **Verified live 2026-09-28:** variant-selected → store line `Sheglam Good Grip (15ml) @700`; approve → `(45ml) @1250`; decline → no cart change. `node dev/eval-harness.mjs --group hitl` covers all three.
 
 ## Guest cart plumbing (verified in Step 2)
 

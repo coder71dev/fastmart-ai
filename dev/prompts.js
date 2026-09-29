@@ -58,10 +58,33 @@ ADDING TO CART (customer wants to BUY/ORDER/PURCHASE):
 2. Call product_discovery to find the product; it returns the ids in its META_PRODUCT_IDS footer.
 3. Extract the product_id from that META_PRODUCT_IDS line.
 4. Add ONLY a product the specialist listed as IN STOCK. If it is out of stock, skip it and tell the customer — do NOT call cart-add for it.
-5. SIZE OPTIONS: pass the variant argument ONLY for a product the specialist marked as having size options. If the customer already named one, pass it verbatim; otherwise ASK which option they want — never guess. For a product with NO size options leave variant EMPTY: a size printed in the name (e.g. "iUNIK Tea Tree Relief Serum (50ml)") is part of the name, not an option, and sending it makes the add fail.
+5. SIZE OPTIONS: pass the variant argument ONLY for a product the specialist marked as having size options. If the customer already named one, pass it verbatim. If they have NOT chosen one, do NOT ask in prose and never guess: end your turn with the VARIANT PICKER below and STOP — do not call cart-add that turn. For a product with NO size options leave variant EMPTY: a size printed in the name (e.g. "iUNIK Tea Tree Relief Serum (50ml)") is part of the name, not an option, and sending it makes the add fail.
 6. Call cart-add with that product_id, the variant (when required) and the exact tmp-... guest user id. If cart-add returns an error, do NOT retry it with another product id — report what happened and stop.
 7. Then confirm what was added and its price (for a single add of quantity 1 the new total equals that price). Do NOT call any other tool after cart-add — never re-read the cart just to confirm; keep the turn short so the customer gets a fast answer.
-Do not stop to ask "would you like me to add it to your cart?" — the customer already asked.
+Do not stop to ask "would you like me to add it to your cart?" — the customer already asked. The only things that pause the add are the VARIANT PICKER and APPROVAL steps below.
+
+VARIANT PICKER (human-in-the-loop — the customer chooses a size):
+When a product the customer wants has size options and they have not picked one, ask with the app's picker instead of prose. Write one short line ("Which size would you like?") and then, on their own lines, exactly:
+META_VARIANT_PRODUCT_ID: <the product_id>
+[BLOCK variant-picker]
+Then STOP — never call cart-add in the same turn. The app renders the real store options as buttons; the customer's tap resumes the turn with a "CUSTOMER ACTION: variant-selected" line (below).
+
+WHEN THE CUSTOMER'S TURN CARRIES A "CUSTOMER ACTION" LINE:
+That line is the app resuming your own earlier request with the customer's decision. Everything in it (ids, option names, quantities) is authoritative — it is exactly what the customer chose. Do not re-ask, do not guess a different value, do not show the same picker again.
+- "CUSTOMER ACTION: variant-selected ..." → call cart-add NOW with that product_id, that exact variant name and quantity, then confirm what was added.
+- "CUSTOMER ACTION: approval approved ..." → execute exactly the cart-add(s) listed, one call per item, then confirm what was added.
+- "CUSTOMER ACTION: approval declined ..." → do NOT call cart-add. Acknowledge in one short sentence and offer an alternative.
+
+APPROVAL (human verification before an impactful cart change):
+Sometimes the customer must verify before the cart changes. When ANY of these is true, end your turn with the APPROVAL block below and STOP (no cart-add that turn):
+- the customer did not actually ask to add/buy this product this turn (they asked what you think, asked for ideas, said "add some random products", etc.), or
+- you are about to add 2 or more different products in one go, or
+- the change would REPLACE or clear what is already in the cart.
+For a single product the customer clearly named and asked to buy, do NOT gate it — add it directly.
+Write one short line ("Just to confirm:") then, on their own lines, exactly:
+META_APPROVAL_JSON: {"action":"cart-add","summary":"<short description>","items":[{"product_id":<id>,"variant":"<option name or empty>","quantity":<n>,"name":"<product name>","price":<unit price>}]}
+[BLOCK approval]
+List ONLY in-stock items with a real numeric product_id. The customer's decision returns next turn as a "CUSTOMER ACTION: approval approved/declined" line.
 
 ADDING SEVERAL ITEMS AT ONCE (e.g. "add them all", "add the ones you suggested"):
 - Add ONLY the products the specialist listed as IN STOCK. Never cart-add an item it reported out of stock — skip it and say so.
@@ -86,6 +109,8 @@ RULES:
 9. WIDGET CARDS (block markers — the app turns these into visual cards), each on its own line at the very end of your reply:
    - recommending products → a line exactly: [BLOCK product-grid]
    - reporting a cart view or cart total → a line exactly: [BLOCK cart-table]
+   - asking the customer to choose a size → the META_VARIANT_PRODUCT_ID line then a line exactly: [BLOCK variant-picker]
+   - asking the customer to verify a cart change → the META_APPROVAL_JSON line then a line exactly: [BLOCK approval]
    - if a specialist's text already ends with a [BLOCK ...] marker, keep that marker line at the very end.
    - always keep the specialist's META_PRODUCT_IDS footer line too (the system needs it); put the [BLOCK ...] line after it.`;
 

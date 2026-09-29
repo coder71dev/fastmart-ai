@@ -109,6 +109,37 @@ if (userId.startsWith('tmp')) {
   if (total == null) total = items.reduce((s2, i2) => s2 + i2.line, 0);
 }
 
+// Human-in-the-loop resume: the widget sends an "action" when the customer taps
+// a size option (variant-picker) or approves/declines a cart change (approval).
+// Turn it into an explicit instruction the orchestrator obeys verbatim — see the
+// ORCHESTRATOR prompt's "CUSTOMER ACTION" section. Without this the resumed turn
+// would just be a bare sentence and the model would re-decide from scratch.
+function intOf(v) { const n = parseInt(String(v == null ? '' : v), 10); return Number.isFinite(n) && n > 0 ? n : 0; }
+function optName(v) { return String(v == null ? '' : v).trim().slice(0, 60); }
+function buildActionLine(a) {
+  if (!a || typeof a !== 'object') return '';
+  const t = String(a.type || '');
+  if (t === 'variant-selected') {
+    const pid = intOf(a.product_id);
+    if (!pid) return '';
+    return 'CUSTOMER ACTION: variant-selected product_id=' + pid + ' variant=' + (optName(a.variant) || '(none)') + ' quantity=' + (intOf(a.quantity) || 1) + '. Call cart-add now with these exact values, then confirm what was added.';
+  }
+  if (t === 'approval') {
+    const items = Array.isArray(a.items) ? a.items.filter((x) => x && intOf(x.product_id)).slice(0, 10) : [];
+    const list = items.map((x) => 'product_id=' + intOf(x.product_id) + ' variant=' + (optName(x.variant) || '(none)') + ' quantity=' + (intOf(x.quantity) || 1)).join('; ');
+    if (String(a.decision) === 'approve') {
+      if (!items.length) return '';
+      return 'CUSTOMER ACTION: approval approved for cart-add. Items: ' + list + '. Call cart-add once per item with these exact values now, then confirm what was added.';
+    }
+    if (String(a.decision) === 'decline') {
+      return 'CUSTOMER ACTION: approval declined for cart-add.' + (items.length ? ' Items: ' + list + '.' : '') + ' Do NOT add anything - acknowledge in one short sentence and offer an alternative.';
+    }
+  }
+  return '';
+}
+const action = (body.action && typeof body.action === 'object') ? body.action : null;
+const actionLine = buildActionLine(action);
+
 const parts = [];
 parts.push('[guest cart user: ' + userId + ']');
 if (cats.length) parts.push('CATEGORIES: ' + cats.join(', '));
@@ -130,10 +161,12 @@ if (profile) {
   if (bits.length) parts.push('CUSTOMER PROFILE: ' + bits.join(' | '));
 }
 
+if (actionLine) parts.push(actionLine);
+
 const ctx = 'CURRENT SHOPPING CONTEXT (authoritative - trust this over conversation history):\\n' + parts.join('\\n');
 const systemPrompt = ${JSON.stringify(P.ORCHESTRATOR)} + '\\n\\n' + ctx;
 
-return [{ json: { chatInput: msgRaw, userId, sessionId: userId, conversationId: userId, profile, evalMode, systemPrompt } }];
+return [{ json: { chatInput: msgRaw, userId, sessionId: userId, conversationId: userId, profile, evalMode, action, systemPrompt } }];
 `;
 
 // ---------------------------------------------------------------------------
@@ -223,7 +256,12 @@ function plainText(s) {
     .trim();
 }
 function stripFooter(s) {
-  return String(s ?? '').replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '').replace(/META_ORDER_JSON:[^\\n]*\\n?/gi, '').trim();
+  return String(s ?? '')
+    .replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '')
+    .replace(/META_ORDER_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
+    .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
+    .trim();
 }
 function normalizeCurrency(s) {
   return String(s ?? '').replace(/(\\d[\\d,]*(?:\\.\\d{1,2})?)\\s*৳/g, '৳$1');
@@ -331,12 +369,32 @@ try { userId = $('Prepare Input').first().json.userId; } catch {}
 const wantsGrid = /\\[BLOCK\\s+product-grid\\]/i.test(replyTxt);
 const wantsCart = /\\[BLOCK\\s+cart-table\\]/i.test(replyTxt);
 const wantsOrder = /\\[BLOCK\\s+order-status\\]/i.test(replyTxt);
+// Human-in-the-loop steps the agent asks for: a size choice (variant-picker) and
+// a confirm-before-changing-cart (approval). Both are blocks-only turns — the
+// customer's tap comes back on the NEXT request as a structured action.
+const wantsVariant = /\\[BLOCK\\s+variant-picker\\]/i.test(replyTxt);
+const wantsApproval = /\\[BLOCK\\s+approval\\]/i.test(replyTxt);
 let ids = [];
 try {
   const m = replyTxt.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
   if (m && m[1] && !/^none$/i.test(m[1].trim())) {
     ids = [...new Set(m[1].split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite))].slice(0, 5);
   }
+} catch {}
+// The variant-picker carries only the product id; the OPTIONS are rebuilt live
+// from the store below (same ground-truth rule as the product grid) so the
+// customer never picks a size the model made up.
+let variantId = 0;
+try {
+  const vm = replyTxt.match(/META_VARIANT_PRODUCT_ID:\\s*(\\d+)/i);
+  if (vm) variantId = parseInt(vm[1], 10) || 0;
+} catch {}
+// The approval payload is the exact cart-add the agent intends; the widget shows
+// it and posts it back verbatim on approve.
+let approvalMeta = null;
+try {
+  const am = replyTxt.match(/META_APPROVAL_JSON:\\s*(\\{.*\\})/i);
+  if (am) { try { approvalMeta = JSON.parse(am[1]); } catch (e) {} }
 } catch {}
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
@@ -434,6 +492,33 @@ if (doCart && userId) {
       replyTxt = guardTotal(replyTxt, total);
     }
   } catch {}
+}
+// VARIANT PICKER — options re-fetched live (ground truth), so the customer
+// chooses from the store's real option names/prices/stock, never the model's.
+if (wantsVariant && variantId) {
+  try {
+    const det = await call(base + '/api/v3/products/' + variantId);
+    const obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
+    const varr = Array.isArray(obj && obj.variant) ? obj.variant : [];
+    const options = varr
+      .map((v) => ({ name: String(v.variant ?? v.name ?? '').trim(), price: Number(v.discount_price ?? v.price ?? 0) || 0, qty: Number(v.qty) || 0 }))
+      .filter((o) => o.name);
+    if (obj && options.length) {
+      blocks.push({ type: 'variant-picker', productId: Number(obj.id) || variantId, productName: String(obj.name ?? '').trim(), image: obj.thumbnail_image ?? null, options });
+    }
+  } catch {}
+}
+// APPROVAL — the agent's intended cart-add, shown for human verification. Only
+// items with a real numeric product_id survive; the widget posts them back
+// verbatim when the customer approves.
+if (wantsApproval && approvalMeta && Array.isArray(approvalMeta.items)) {
+  const items = approvalMeta.items
+    .map((x) => ({ product_id: Number(x.product_id) || 0, name: String(x.name ?? '').trim(), variant: x.variant ? String(x.variant) : null, quantity: Math.max(1, Math.min(10, Number(x.quantity) || 1)), price: Number(x.price) || 0 }))
+    .filter((x) => x.product_id > 0)
+    .slice(0, 10);
+  if (items.length) {
+    blocks.push({ type: 'approval', action: String(approvalMeta.action || 'cart-add'), summary: String(approvalMeta.summary || 'Confirm this cart change').slice(0, 200), items, approveLabel: 'Add to cart', denyLabel: 'Cancel' });
+  }
 }
 out.blocks = blocks;
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);

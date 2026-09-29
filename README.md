@@ -152,10 +152,7 @@ node dev/deploy.mjs dev/out/searchTool.json dev/out/productDetailTool.json dev/o
 
 `dev/deploy.mjs` matches workflows **by name** and re-activates them, so it overwrites the old versions in place — no need to delete anything first.
 
-> **401 on deploy?** `dev/deploy.mjs` hardcodes one owner UUID (line 11). On the VPS the owner is a different user. Read the real one and update it:
-> ```bash
-> docker exec fastmart-n8n-postgres psql -U n8n -d fastmart_n8n -Atc 'SELECT id FROM "user" LIMIT 1'
-> ```
+> **Deploy auth** — `dev/deploy.mjs` finds the owner itself (reads `roleSlug = 'global:owner'` from n8n's DB), so the same command works locally and on the VPS. Override with `N8N_OWNER_ID=<uuid>` if you need a specific account.
 
 Verify it landed:
 
@@ -202,8 +199,8 @@ node dev/deploy.mjs dev/out/agentChat.json
 | `dev/build-workflows.mjs` | Builds the 4 specialist + 2 tool workflows |
 | `dev/build-main.mjs` | Builds the main agent workflow |
 | `dev/bootstrap-creds.mjs` | Creates credentials and deploys all workflows on a fresh instance |
-| `dev/deploy.mjs` | Deploys workflow JSONs (needs the original owner account) |
-| `dev/eval-harness.mjs` | Eval battery — 10 test cases |
+| `dev/deploy.mjs` | Deploys workflow JSONs (auto-detects the n8n owner) |
+| `dev/eval-harness.mjs` | Eval battery — 14 test cases (`--group hitl` for the human-in-the-loop ones) |
 | `dev/prod-bench.mjs` | Latency and token cost benchmark |
 | `dev/model-config.mjs` | Swap models without editing workflow code |
 | `dev/build-collector.mjs` | Builds the token-usage collector workflow |
@@ -256,6 +253,8 @@ node dev/eval-harness.mjs
 > ```
 
 > **Model** is also baked at build time, but the provider is an env choice: `MODEL_PROVIDER=gemini node dev/build-main.mjs` switches to Gemini. See `dev/model-config.mjs`.
+
+> **Rebuilt locally? Re-patch the credentials.** The build scripts emit the *production* credential ids. On a local/other instance the ids differ, so `node dev/deploy.mjs dev/out/agentChat.json` right after a rebuild breaks chat memory (`Error in sub-node PG Memory`). Run `node dev/bootstrap-creds.mjs` after the build — it rewrites the ids to your instance's and redeploys.
 
 ---
 

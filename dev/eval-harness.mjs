@@ -31,8 +31,13 @@ const now = () => Date.now();
 let passed = 0, failed = 0, warns = 0, cases = [];
 
 function stripExtraneous(t) {
+  // store error/debug pages can prefix JSON in dev. Pick the EARLIEST of { or [ —
+  // the cart read returns a JSON ARRAY, and looking only for "{" left the trailing
+  // "]" in place (invalid JSON), which made storeCart() silently return [].
   const i = t.indexOf('{');
-  return i > 0 ? t.slice(i) : t; // store error/debug pages can prefix JSON in dev
+  const j = t.indexOf('[');
+  const start = Math.min(i < 0 ? Infinity : i, j < 0 ? Infinity : j);
+  return start === Infinity ? t : t.slice(start);
 }
 async function postChat(body) {
   const t0 = now();
@@ -56,7 +61,7 @@ async function storeCart(userId) {
     if (Array.isArray(j)) {
       for (const shop of j) for (const it of (shop?.cart_items ?? [])) {
         if (!it) continue;
-        rows.push({ id: String(it.id ?? rows.length + 1), product_id: it.product_id, name: it.product_name, price: Number(it.price) || 0, quantity: Number(it.quantity) || 0 });
+        rows.push({ id: String(it.id ?? rows.length + 1), product_id: it.product_id, name: it.product_name, variation: it.variation ?? null, price: Number(it.price) || 0, quantity: Number(it.quantity) || 0 });
       }
     }
   } catch {}
@@ -161,6 +166,52 @@ battery.push(['cart remove empties it', 'cart', true, async () => {
   const stillShowsSerum = !!ct && ct.total > 0 && (ct.items ?? []).some((i) => /iUNIK|serum/i.test(i.name ?? ''));
   const saysEmpty = /(empty|nothing|no item|none|৳\s*0)/i.test(reply);
   return { ok: !stillShowsSerum && saysEmpty, detail: reply.slice(0, 120) };
+}]);
+
+// ---- human-in-the-loop (variant-picker / approval) -------------------------
+// A paused tool call resumes when the widget posts a structured `action`. These
+// cases drive that path directly (they do NOT need product search), which is
+// exactly what the SPA sends when the customer taps an option / Approve.
+// Product 100 (Sheglam Good Grip Hydrating Primer) has size options 15ml/45ml.
+const HITL_VARIANT_CART = `tmp-evalh-${RUN}v`;
+const HITL_APPROVE_CART = `tmp-evalh-${RUN}a`;
+const HITL_DECLINE_CART = `tmp-evalh-${RUN}d`;
+
+battery.push(['variant-picker choice resumes the add', 'hitl', true, async () => {
+  const { status, json } = await postChat({ message: 'Add Sheglam Good Grip Hydrating Primer (15ml)', conversation_id: HITL_VARIANT_CART, action: { type: 'variant-selected', product_id: 100, variant: '15ml', quantity: 1 } });
+  if (status !== 200 || !json) return { ok: false, detail: `http ${status}` };
+  const rows = await storeCart(HITL_VARIANT_CART);
+  const line = rows.find((r) => Number(r.product_id) === 100 && /15ml/i.test(String(r.variation || '')));
+  if (!line) return { ok: false, detail: `store cart has no 15ml line: ${JSON.stringify(rows)}` };
+  return { ok: true, detail: `store line ${line.name} (${line.variation}) @${line.price}` };
+}]);
+
+battery.push(['approval approve executes the cart-add', 'hitl', true, async () => {
+  const { status, json } = await postChat({ message: 'Yes, add it', conversation_id: HITL_APPROVE_CART, action: { type: 'approval', decision: 'approve', action: 'cart-add', items: [{ product_id: 100, variant: '45ml', quantity: 1, name: 'Sheglam Good Grip (45ml)' }] } });
+  if (status !== 200 || !json) return { ok: false, detail: `http ${status}` };
+  const rows = await storeCart(HITL_APPROVE_CART);
+  const line = rows.find((r) => Number(r.product_id) === 100 && /45ml/i.test(String(r.variation || '')));
+  if (!line) return { ok: false, detail: `store cart has no 45ml line: ${JSON.stringify(rows)}` };
+  return { ok: true, detail: `store line ${line.variation} @${line.price}` };
+}]);
+
+battery.push(['approval decline changes nothing', 'hitl', true, async () => {
+  const { status, json } = await postChat({ message: 'No thanks', conversation_id: HITL_DECLINE_CART, action: { type: 'approval', decision: 'decline', action: 'cart-add', items: [{ product_id: 100, variant: '45ml', quantity: 1, name: 'Sheglam Good Grip (45ml)' }] } });
+  if (status !== 200 || !json) return { ok: false, detail: `http ${status}` };
+  const rows = await storeCart(HITL_DECLINE_CART);
+  if (rows.length) return { ok: false, detail: `decline still added: ${JSON.stringify(rows)}` };
+  const saysNo = (json.reply || '').length > 0;
+  return { ok: saysNo, detail: (json.reply || '').slice(0, 110) };
+}]);
+
+// Search-dependent: the agent must OFFER the picker (not guess a size) for a
+// size-option product. Soft — it needs the store's search index to be up.
+battery.push(['size-option product is asked via picker, not guessed', 'hitl', false, async () => {
+  const { json } = await postChat({ message: 'add the Sheglam Good Grip Hydrating Primer to my cart' });
+  const vp = json?.blocks?.find((b) => b.type === 'variant-picker');
+  if (!vp) return { ok: false, detail: 'no variant-picker block: ' + JSON.stringify((json?.blocks || []).map((b) => b.type)) };
+  const ok = vp.options?.length >= 2 && vp.options.every((o) => o.name && typeof o.price === 'number');
+  return { ok, detail: `${vp.productName}: ${JSON.stringify(vp.options)}` };
 }]);
 
 // ---- support --------------------------------------------------------------

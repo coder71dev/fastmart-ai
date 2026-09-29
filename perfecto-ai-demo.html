@@ -467,7 +467,7 @@
                   </div>
                 </div>
 
-                <!-- blocks: all 8 OutputBlock types -->
+                <!-- blocks: all 10 OutputBlock types (incl. the two human-in-the-loop steps) -->
                 <template x-for="(b, bi) in (m.blocks || [])" :key="bi">
                   <div class="pl-9">
                     <div x-show="b.type === 'product-grid' || b.type === 'product-carousel'" class="space-y-2">
@@ -602,6 +602,41 @@
                       <p class="border-t border-sand px-3.5 py-2 text-[10px] text-ink/40">Identity and delivery address are hidden in chat.</p>
                     </div>
 
+                    <!-- variant-picker: human-in-the-loop — the customer chooses a size; the tap resumes the agent's add -->
+                    <div x-show="b.type === 'variant-picker'" class="overflow-hidden rounded-2xl border border-clay/30 bg-white" x-cloak>
+                      <div x-show="b.productName" class="flex items-center gap-2 border-b border-sand px-3 py-2.5">
+                        <img :src="img(b.image)" @error="onImgError($event)" alt="" class="h-9 w-8 shrink-0 rounded-lg bg-sand object-cover" />
+                        <p class="min-w-0 flex-1 truncate text-[13px] font-semibold" x-text="b.productName"></p>
+                      </div>
+                      <p class="px-3 pt-2.5 text-[11px] uppercase tracking-wider text-ink/40">Choose an option</p>
+                      <div class="flex flex-wrap gap-1.5 px-3 pb-3 pt-1.5">
+                        <template x-for="(o, oi) in (b.options || [])" :key="oi">
+                          <button
+                            @click="chooseVariant(b, o)"
+                            :disabled="typing || mi !== messages.length - 1 || !(o.qty > 0)"
+                            class="rounded-full border px-3 py-1.5 text-[12px] font-medium transition disabled:opacity-40"
+                            :class="o.qty > 0 ? 'border-clay/40 bg-white text-clay hover:bg-clay hover:text-cream' : 'border-sand bg-sand text-ink/40'"
+                            x-text="o.name + ' · ' + money(o.price) + (o.qty > 0 ? (o.qty <= 3 ? ' · ' + o.qty + ' left' : '') : ' · out of stock')"
+                          ></button>
+                        </template>
+                      </div>
+                    </div>
+
+                    <!-- approval: human-in-the-loop — the customer verifies a cart change before the agent executes it -->
+                    <div x-show="b.type === 'approval'" class="overflow-hidden rounded-2xl border border-clay/30 bg-white" x-cloak>
+                      <div class="space-y-1 border-b border-sand px-3 py-2.5">
+                        <p class="text-[10px] uppercase tracking-wider text-ink/40">Please confirm</p>
+                        <p class="text-[13px] font-semibold" x-text="b.summary || 'Confirm this action'"></p>
+                        <template x-for="(it, ii) in (b.items || [])" :key="ii">
+                          <p class="text-[12px] text-ink/60" x-text="'+ ' + (it.name || 'item') + (it.variant ? ' · ' + it.variant : '') + ' × ' + it.quantity + (it.price ? ' · ' + money(it.price) : '')"></p>
+                        </template>
+                      </div>
+                      <div class="flex gap-2 px-3 py-2.5">
+                        <button @click="decideApproval(b, false)" :disabled="typing || mi !== messages.length - 1" class="rounded-full border border-sand bg-white px-3 py-1.5 text-[12px] font-medium transition hover:border-clay/40 disabled:opacity-40" x-text="b.denyLabel || 'Cancel'"></button>
+                        <button @click="decideApproval(b, true)" :disabled="typing || mi !== messages.length - 1" class="rounded-full bg-clay px-3 py-1.5 text-[12px] font-semibold text-cream transition hover:bg-clayd disabled:opacity-40" x-text="b.approveLabel || 'Confirm'"></button>
+                      </div>
+                    </div>
+
                     <div x-show="b.type === 'category-carousel'" class="flex flex-wrap gap-1.5" x-cloak>
                       <template x-for="c in (b.categories || [])" :key="c">
                         <button @click="pickCategoryByName(c)" class="rounded-full border border-sand bg-white px-3 py-1.5 text-[12px] font-medium transition hover:border-clay" x-text="c"></button>
@@ -691,8 +726,9 @@
          Perfecto BD AI Shopping Assistant — real SPA (no build step).
 
          BRAIN  — n8n workflow "agent-chat (prod webhook)" (id oAlPFsGVYAlhZami,
-                  webhook path `spike/agent-chat`). POST {message, conversation_id, profile}
+                  webhook path `spike/agent-chat`). POST {message, conversation_id, profile, action?}
                   -> {reply, conversation_id, blocks[], token_usage}. Full-response wait.
+                  `action` resumes a human-in-the-loop step (variant-picker / approval).
 
          STORE  — every read/write goes to STORE_BASE_URL. Endpoints used (all verified live):
            GET  /api/v3/business-settings?q=<types>   site name, logos, contact, topbar   -> {data:[{type,value,image_url}]}
@@ -718,6 +754,11 @@
            product-grid|product-carousel {products:[card]}   cart-table {items:[...],total,count}
            comparison {items,rows}   category-carousel {categories}   rich-text {text}
            info-cards {cards}        chips {chips}
+           variant-picker {productId,productName,image,options:[{name,price,qty}]}   (human-in-the-loop)
+           approval {action,summary,items:[{product_id,name,variant,quantity,price}],approveLabel,denyLabel}
+         The two human-in-the-loop blocks pause the agent's cart action: a tap posts a
+         structured `action` back to the webhook (see sendAction/chooseVariant/decideApproval)
+         and the resumed turn executes the add.
          ══════════════════════════════════════════════════════════════════════ */
       const CFG = {
         N8N: window.__PERFECTO_N8N_CHAT_WEBHOOK || "http://localhost:5678/webhook/spike/agent-chat",
@@ -785,6 +826,7 @@
               tiles: Array.isArray(m.tiles) ? m.tiles : null,
               options: Array.isArray(m.options) ? m.options : null,
               retry: typeof m.retry === "string" ? m.retry : null,
+              retryAction: m.retryAction && typeof m.retryAction === "object" ? m.retryAction : null,
             }));
         } catch {
           return [];
@@ -906,6 +948,35 @@
         if (t === "chips") {
           const chips = (b.chips ?? b.items ?? []).map((c) => (typeof c === "string" ? c : c && (c.label ?? c.text))).filter(Boolean);
           return chips.length ? { type: t, chips } : null;
+        }
+        // human-in-the-loop: the customer picks a size (variant-picker) or
+        // approves/declines a cart change (approval). Both post an `action` back.
+        if (t === "variant-picker") {
+          const options = (b.options ?? b.items ?? [])
+            .map((o) => ({ name: String(o.name ?? o.variant ?? ""), price: Number(o.price) || 0, qty: Number(o.qty) || 0 }))
+            .filter((o) => o.name);
+          if (!options.length) return null;
+          return { type: t, productId: Number(b.productId ?? b.product_id) || 0, productName: b.productName ? String(b.productName) : "", image: b.image ?? null, options };
+        }
+        if (t === "approval") {
+          const items = (b.items ?? [])
+            .map((it) => ({
+              product_id: Number(it.product_id ?? it.id) || 0,
+              name: String(it.name ?? it.product_name ?? ""),
+              variant: it.variant ? String(it.variant) : null,
+              quantity: Number(it.quantity) || 1,
+              price: Number(it.price) || 0,
+            }))
+            .filter((it) => it.product_id || it.name);
+          if (!items.length && !b.summary) return null;
+          return {
+            type: t,
+            action: String(b.action || "cart-add"),
+            summary: b.summary ? String(b.summary) : "",
+            items,
+            approveLabel: b.approveLabel ? String(b.approveLabel) : "Add to cart",
+            denyLabel: b.denyLabel ? String(b.denyLabel) : "Cancel",
+          };
         }
         return null;
       }
@@ -1414,7 +1485,7 @@
             const blocks = (extra.blocks || []).map(normalizeBlock).filter(Boolean);
             const ct = blocks.find((b) => b.type === "cart-table");
             if (ct) this.cart = ct.items;
-            this.messages.push({ role: "ai", text, blocks, chips: extra.chips || [], tiles: extra.tiles || null, options: extra.options || null, retry: extra.retry || null });
+            this.messages.push({ role: "ai", text, blocks, chips: extra.chips || [], tiles: extra.tiles || null, options: extra.options || null, retry: extra.retry || null, retryAction: extra.retryAction || null });
             saveChat(this.messages);
             this.scroll();
           },
@@ -1437,27 +1508,46 @@
           },
           onTile(t) { if (t.quiz) return this.startQuiz(); return this.send(t.say); },
           onChip(c) { if (/skin quiz/i.test(c)) return this.startQuiz(); return this.send(c); },
-          async send(raw) {
+          async send(raw) { return this.sendAction(raw); },
+          // Human-in-the-loop: a variant/approval tap posts a structured `action`.
+          // The workflow turns it into a "CUSTOMER ACTION" context line and the
+          // agent executes the cart change — the tool only runs after the human acts.
+          async sendAction(raw, action) {
             const text = (raw || "").trim();
             if (!text || this.typing) return;
             this.draft = "";
             this.user(text);
             if (this.quiz) { this.quizStep(text); return; }
-            return this.request(text);
+            return this.request(text, action);
+          },
+          chooseVariant(b, o) {
+            if (!o || !(o.qty > 0)) return this.notify("That option is out of stock");
+            const label = "Add " + (b.productName || "it") + " (" + o.name + ")";
+            return this.sendAction(label, { type: "variant-selected", product_id: b.productId, variant: o.name, quantity: 1 });
+          },
+          decideApproval(b, yes) {
+            const items = (b.items || []).map((it) => ({ product_id: it.product_id, name: it.name, variant: it.variant || "", quantity: it.quantity || 1 }));
+            if (!items.length) return;
+            const label = yes ? (b.approveLabel || "Yes, confirm") : (b.denyLabel || "No, cancel");
+            return this.sendAction(label, { type: "approval", decision: yes ? "approve" : "decline", action: b.action || "cart-add", items });
           },
           // One turn against the webhook. Never ends silently: every path either
           // renders an answer or an error bubble (with a retry affordance).
-          async request(text) {
+          async request(text, action) {
             this.typing = true;
             this.scroll();
-            const fail = (msg) => this.ai(msg, { retry: text });
+            // Keep the structured action with the retry so a failed human-in-the-loop
+            // turn re-sends the customer's choice, not just the label text.
+            const fail = (msg) => this.ai(msg, { retry: text, retryAction: action || null });
             try {
               let r;
               try {
+                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj() };
+                if (action) payload.action = action;
                 r = await fetch(CFG.N8N, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ message: text, conversation_id: this.cid, profile: this.profileObj() }),
+                  body: JSON.stringify(payload),
                 });
               } catch (netErr) {
                 // fetch() only rejects when the request never left the browser: mixed
@@ -1505,7 +1595,7 @@
             if (!text || this.typing) return;
             this.messages = this.messages.filter((x) => x !== m);
             saveChat(this.messages);
-            this.request(text);
+            this.request(text, (m && m.retryAction) || undefined);
           },
 
           /* ══ quiz -> profile ══ */
