@@ -297,10 +297,16 @@ docker compose logs -f n8n
 docker compose down
 docker compose down -v              # wipes volumes
 
-# Local dev
+# Local dev (adds Meilisearch + host mapping for fastmart-pro.test)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 docker compose -f docker-compose.yml -f docker-compose.dev.yml down
 ```
+
+> **Meilisearch won't start after a restart?** Docker remembers the network ID a container was created on. If the network was destroyed and recreated (same name, new ID) — by a `docker compose down` or a host restart — the container is orphaned: `docker start` fails with `network <old-id> not found`. Fix:
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --force-recreate meilisearch
+> ```
+> If the search index is empty after restart (`/indexes` returns `results: []`), the product data needs re-indexing from the store database — run the store's `search:sync` artisan command from the `fastmart-pro` repo.
 
 ---
 
