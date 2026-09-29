@@ -237,7 +237,31 @@ async function main() {
   console.log(`credentials: model=${ids.MODEL_CRED_NAME} (${ids.MODEL_CRED_ID})  pg=${ids.PG_CRED_NAME} (${ids.PG_CRED_ID})`);
 
   if (CHECK_ONLY) {
-    console.log('--check: not deploying.');
+    // Build everything using the ids already on this instance, then verify
+    // without deploying. This catches stale references, bad credentials and
+    // broken prompts before you commit to the deploy.
+    console.log('--check: building (not deploying)...');
+    console.log('\n[1/3] tool sub-workflows');
+    run('build-workflows.mjs', {});
+
+    ids.SEARCH_TOOL_ID = existing.get('tool-search-products');
+    ids.DETAIL_TOOL_ID = existing.get('tool-product-detail');
+    if (!ids.SEARCH_TOOL_ID || !ids.DETAIL_TOOL_ID) {
+      throw new Error('--check: tool sub-workflows not on this instance — run sync.mjs without --check first');
+    }
+    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}`);
+    console.log('\n[2/3] specialists');
+    run('build-workflows.mjs', ids);
+
+    ids.PRODUCT_DISCOVERY_ID = existing.get('specialist-product-discovery');
+    ids.SUPPORT_SPECIALIST_ID = existing.get('specialist-support');
+    ids.CART_SPECIALIST_ID = existing.get('specialist-cart');
+    ids.ORDER_SPECIALIST_ID = existing.get('specialist-orders');
+    console.log(`      product=${ids.PRODUCT_DISCOVERY_ID} support=${ids.SUPPORT_SPECIALIST_ID} cart=${ids.CART_SPECIALIST_ID} orders=${ids.ORDER_SPECIALIST_ID}`);
+    console.log('\n[3/3] main agent');
+    run('build-main.mjs', ids);
+
+    console.log('');
   } else {
     // 1. deploy the two tool sub-workflows first (no dependencies)
     console.log('\n[1/3] tool sub-workflows');
