@@ -99,7 +99,8 @@ function resolveCred(envId, envName, defaultName, map) {
     throw new Error(
       `no credential named "${envName || defaultName}" on this instance.\n` +
       `  available: ${[...map.keys()].join(', ') || '(none)'}\n` +
-      '  create it in n8n (Credentials) or pass ' + (envName ? '' : 'MODEL_CRED_') + 'CRED_ID.',
+      '  create it in n8n (Credentials) or pass ' +
+      (defaultName === DEFAULT_MODEL_CRED ? 'MODEL_CRED_ID / MODEL_CRED_NAME' : 'PG_CRED_ID / PG_CRED_NAME') + '.',
     );
   }
   return { id, name: envName || defaultName };
