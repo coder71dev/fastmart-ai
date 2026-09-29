@@ -34,7 +34,11 @@ const REST = 'http://localhost:5678/rest';
 const CHECK_ONLY = process.argv.includes('--check');
 
 const DEFAULT_MODEL_CRED = 'OpenAI compatible Commandcode';
+const MODEL_CRED_FALLBACK = 'OpenAi account';
+// The postgres credential was created by bootstrap-creds.mjs with a slightly
+// different name depending on when it ran. Try both.
 const DEFAULT_PG_CRED = 'fastmart Postgres (n8n DB)';
+const PG_CRED_FALLBACK = 'fastmart Postgres (fastmart_ai DB)';
 
 // Deployment order = dependency order. A workflow that is called as a tool must
 // EXIST before the caller is built, because the caller needs its id.
@@ -227,8 +231,16 @@ async function main() {
   }
 
   const creds = credentialsByName();
-  const modelCred = resolveCred(process.env.MODEL_CRED_ID, process.env.MODEL_CRED_NAME, DEFAULT_MODEL_CRED, creds);
-  const pgCred = resolveCred(process.env.PG_CRED_ID, process.env.PG_CRED_NAME, DEFAULT_PG_CRED, creds);
+  // Try the default name first, then a fallback. The credential was created at
+  // different times with slightly different names — both are valid.
+  let modelCred;
+  try { modelCred = resolveCred(process.env.MODEL_CRED_ID, process.env.MODEL_CRED_NAME, DEFAULT_MODEL_CRED, creds); }
+  catch (e) { modelCred = resolveCred(process.env.MODEL_CRED_ID, process.env.MODEL_CRED_NAME, MODEL_CRED_FALLBACK, creds); }
+  // The postgres credential was created by bootstrap-creds.mjs with slightly
+  // different names depending on when it ran — try both before failing.
+  let pgCred;
+  try { pgCred = resolveCred(process.env.PG_CRED_ID, process.env.PG_CRED_NAME, DEFAULT_PG_CRED, creds); }
+  catch (e) { pgCred = resolveCred(process.env.PG_CRED_ID, process.env.PG_CRED_NAME, PG_CRED_FALLBACK, creds); }
   const ids = {
     MODEL_CRED_ID: modelCred.id,
     MODEL_CRED_NAME: modelCred.name,
