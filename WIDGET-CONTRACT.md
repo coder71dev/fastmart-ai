@@ -37,9 +37,12 @@ Content-Type: application/json
   "reply": "string",                 // agent text (mirror of $fromAI('output'))
   "conversation_id": "string",       // echoed when provided, else a fresh guest id
   "blocks": [ ...OutputBlock... ],   // may be empty array
+  "suggestions": ["string", ...],    // optional; guided next-step chips (<=3 shown)
   "token_usage": null                // reserved; see note below
 }
 ```
+
+- `suggestions` is **optional**. When present, the widget renders them as the "Suggested next steps" chips under the reply and they take precedence over the client-derived ones. When absent, the widget derives contextual chips from the turn's blocks and the customer's profile, so every reply still offers a clear next step. A legacy `chips` array is also accepted.
 
 - **No token streaming, no inline approvals.** The widget waits for the full body (plain `response.json()`), shows a spinner meanwhile.
 - `token_usage` is **always `null`** — re-verified on n8n `2.40.5` (2026-09-22, the current `latest` image) and it was `null` on `2.37.6` before that, so it is a platform limit rather than a bug we can fix in the workflow: the Agent node's output is only `{output, intermediateSteps}` (this version never emits `tokenUsage`), and n8n's expression data proxy cannot read the `ai_languageModel` sub-node that actually holds the per-call usage — `$('OpenAI Chat Model')`, `$node[...]` and `.all()`/`.first()` all throw `No data found from 'main' input`. The field is kept in the response so a future n8n that does expose it needs no contract change. **For real per-turn cost, read n8n's own Postgres** (`metadata.tracing['llm.tokens.in'|'out']` per execution), which is what `dev/prod-bench.mjs` does — it sums the orchestrator **and** its child specialist executions.
@@ -119,7 +122,8 @@ The workflow's `Prepare Input` node turns `action` into a `CUSTOMER ACTION: …`
 The widget's cart IS the store's guest cart. One shared `conversation_id` maps to the store cart's `tmp_*` user id:
 
 - conversation_id `tmp-widget-<uuid>` → guest cart `user_id=tmp-widget-<uuid>` (store's `is_guest_user` middleware reads `tmp*` as `temp_user_id`).
-- n8n **echoes** the same id back (see above). If the widget doesn't send one, n8n mints `tmp-widget-<uuid>` and returns it — the widget persists it (its `perfecto_conversation_id` localStorage key) so a session keeps one cart.
+- n8n **echoes** the same id back (see above). If the widget doesn't send one, n8n mints `tmp-widget-<uuid>` and returns it — the widget stores it on the active conversation so a session keeps one cart.
+- The widget keeps a **list of conversations** (localStorage `perfecto_sessions_v1`, plus `perfecto_active_session` for the selected one). Each conversation keeps its own `conversation_id`, so switching chats switches the agent's memory *and* its guest cart — the same behaviour the old single-session "Reset session" button had.
 
 ## Blocks JSON helpers (what the agent can emit)
 

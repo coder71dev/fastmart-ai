@@ -99,6 +99,55 @@
           opacity: 0;
         }
       }
+      /* suggested next steps — the guided moves under the latest assistant turn */
+      .sugg {
+        animation: pop 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+      }
+      .sugg-head {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-bottom: 6px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(27, 22, 20, 0.35);
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border-radius: 9999px;
+        border: 1px solid #f1e8dd;
+        background: #ffffff;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.1;
+        color: rgba(27, 22, 20, 0.72);
+        box-shadow: 0 1px 2px rgba(27, 22, 20, 0.04);
+        transition: color 0.15s, background-color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+      }
+      .chip:hover,
+      .chip:focus-visible {
+        outline: none;
+        border-color: rgba(200, 101, 74, 0.5);
+        background: #fff7f4;
+        color: #a24c34;
+        box-shadow: 0 8px 20px -12px rgba(27, 22, 20, 0.45);
+        transform: translateY(-1px);
+      }
+      .chip-ic {
+        opacity: 0.35;
+        transition: transform 0.15s, opacity 0.15s;
+      }
+      .chip:hover .chip-ic,
+      .chip:focus-visible .chip-ic {
+        opacity: 1;
+        transform: translate(1px, -1px);
+      }
     </style>
   </head>
   <body class="bg-cream font-sans text-ink antialiased">
@@ -413,7 +462,7 @@
       <section
         x-show="open"
         x-transition:enter-start="translate-y-6 opacity-0"
-        class="fixed inset-0 z-50 flex flex-col bg-cream transition sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(760px,calc(100vh-2.5rem))] sm:w-[420px] sm:overflow-hidden sm:rounded-3xl sm:border sm:border-sand sm:shadow-soft"
+        class="fixed inset-0 z-50 flex flex-col overflow-hidden bg-cream transition sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(760px,calc(100vh-2.5rem))] sm:w-[420px] sm:rounded-3xl sm:border sm:border-sand sm:shadow-soft"
       >
         <div class="shrink-0 bg-ink px-4 py-3 text-cream">
           <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
@@ -426,9 +475,15 @@
                 </p>
               </div>
             </div>
-            <div class="flex shrink-0 items-center gap-1">
-              <button @click="resetSession()" title="Reset session" class="rounded-full p-2 text-cream/60 hover:bg-cream/10">↺</button>
-              <button @click="setOpen(false)" class="rounded-full p-2 text-cream/60 hover:bg-cream/10">✕</button>
+            <div class="flex shrink-0 items-center gap-0.5">
+              <button @click="newChat()" title="New chat" aria-label="New chat" class="rounded-full p-2 text-cream/60 transition hover:bg-cream/10 hover:text-cream">
+                <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              </button>
+              <button @click="historyOpen = true" title="Chat history" aria-label="Chat history" class="relative rounded-full p-2 text-cream/60 transition hover:bg-cream/10 hover:text-cream">
+                <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.3" /><path d="M3 4v4.5h4.5" /><path d="M12 8.5V12l2.5 1.5" /></svg>
+                <span x-show="sessions.length > 1" class="absolute right-0.5 top-0.5 grid h-4 min-w-[16px] place-items-center rounded-full bg-clay px-1 text-[9px] font-bold leading-none text-cream" x-text="sessions.length"></span>
+              </button>
+              <button @click="setOpen(false)" title="Close" aria-label="Close" class="rounded-full p-2 text-cream/60 transition hover:bg-cream/10 hover:text-cream">✕</button>
             </div>
           </div>
           <div x-show="profileChips.length" class="mt-3 flex flex-wrap gap-1.5">
@@ -441,10 +496,133 @@
           </div>
         </div>
 
+        <!-- ══════════ CHAT HISTORY DRAWER ══════════ -->
+        <div x-show="historyOpen" x-cloak x-transition.opacity.duration.200ms class="absolute inset-0 z-30 bg-ink/40" @click.self="historyOpen = false">
+          <aside
+            x-show="historyOpen"
+            x-transition:enter-start="-translate-x-full"
+            x-transition:leave-end="-translate-x-full"
+            class="flex h-full w-[80%] max-w-[300px] flex-col bg-cream shadow-lift transition-transform duration-300"
+          >
+            <div class="flex shrink-0 items-center justify-between border-b border-sand px-4 py-3">
+              <div class="min-w-0">
+                <h3 class="font-display text-base leading-tight">Your chats</h3>
+                <p class="text-[11px] text-ink/45" x-text="sessions.length + (sessions.length === 1 ? ' conversation' : ' conversations')"></p>
+              </div>
+              <button @click="historyOpen = false" title="Close" aria-label="Close history" class="rounded-full p-2 text-ink/45 transition hover:bg-sand hover:text-ink">✕</button>
+            </div>
+
+            <button
+              @click="newChat()"
+              class="mx-3 mt-3 inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full bg-clay py-2.5 text-sm font-semibold text-cream transition hover:bg-clayd"
+            >
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              New chat
+            </button>
+
+            <div class="mt-3 flex-1 space-y-1 overflow-y-auto px-2 pb-3 no-sb">
+              <template x-for="s in sessions" :key="s.id">
+                <div class="group flex items-center gap-1 rounded-2xl pr-1.5 transition" :class="s.id === activeId ? 'bg-sand' : 'hover:bg-sand/60'">
+                  <button @click="openSession(s.id)" class="min-w-0 flex-1 px-3 py-2.5 text-left">
+                    <p class="truncate text-[13px] font-semibold" :class="s.id === activeId ? 'text-ink' : 'text-ink/75'" x-text="s.title"></p>
+                    <p class="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-ink/45">
+                      <span x-text="relTime(s.updatedAt)"></span>
+                      <span class="h-0.5 w-0.5 shrink-0 rounded-full bg-ink/25"></span>
+                      <span x-text="sessionCount(s)"></span>
+                    </p>
+                  </button>
+                  <span x-show="s.id === activeId" class="h-2 w-2 shrink-0 rounded-full bg-clay"></span>
+                  <button
+                    @click.stop="deleteSession(s.id)"
+                    title="Delete chat"
+                    aria-label="Delete chat"
+                    class="shrink-0 rounded-full p-1.5 text-ink/30 opacity-0 transition group-hover:opacity-100 hover:bg-white hover:text-clay focus-visible:opacity-100"
+                  >✕</button>
+                </div>
+              </template>
+              <p x-show="!sessions.length" class="px-3 py-10 text-center text-[12px] text-ink/45">No conversations yet.</p>
+            </div>
+
+            <p class="shrink-0 border-t border-sand px-4 py-2.5 text-[10px] leading-relaxed text-ink/40">Each chat keeps its own basket, so switching conversations switches what's in your cart.</p>
+          </aside>
+        </div>
+
         <div class="flex-1 space-y-4 overflow-y-auto px-4 py-4 no-sb" x-ref="scroll">
           <p class="rounded-xl bg-sand/60 px-3 py-2 text-center text-[11px] leading-relaxed text-ink/50">
             You're chatting with an AI assistant. It offers product guidance, not medical advice.
           </p>
+
+          <!-- ══════════ WELCOME: TOP CATEGORIES CAROUSEL ══════════ -->
+          <div x-show="isWelcome && carouselCats.length" x-cloak class="group/car relative">
+            <div class="mb-2 flex items-end justify-between gap-2 px-0.5">
+              <div class="min-w-0">
+                <h2 class="font-display text-[15px] leading-tight">Shop by category</h2>
+                <p class="text-[11px] text-ink/45">Start with one of our most-loved aisles</p>
+              </div>
+              <div class="hidden shrink-0 items-center gap-1 sm:flex">
+                <button
+                  type="button"
+                  @click="scrollCats(-1)"
+                  :disabled="catAtStart"
+                  aria-label="Previous categories"
+                  class="grid h-7 w-7 place-items-center rounded-full border border-sand bg-white text-ink/60 shadow-sm transition hover:border-clay/40 hover:text-clay disabled:opacity-35 disabled:hover:border-sand disabled:hover:text-ink/60"
+                >
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+                </button>
+                <button
+                  type="button"
+                  @click="scrollCats(1)"
+                  :disabled="catAtEnd"
+                  aria-label="More categories"
+                  class="grid h-7 w-7 place-items-center rounded-full border border-sand bg-white text-ink/60 shadow-sm transition hover:border-clay/40 hover:text-clay disabled:opacity-35 disabled:hover:border-sand disabled:hover:text-ink/60"
+                >
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="relative -mx-4">
+              <div
+                class="pointer-events-none absolute inset-y-0 left-0 z-10 w-5 bg-gradient-to-r from-cream to-transparent transition-opacity duration-200"
+                :class="catAtStart ? 'opacity-0' : 'opacity-100'"
+              ></div>
+              <div
+                class="pointer-events-none absolute inset-y-0 right-0 z-10 w-5 bg-gradient-to-l from-cream to-transparent transition-opacity duration-200"
+                :class="catAtEnd ? 'opacity-0' : 'opacity-100'"
+              ></div>
+
+              <div
+                x-ref="catScroll"
+                @scroll="updateCatEdges()"
+                class="no-sb flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-4 pb-1 pt-0.5"
+              >
+                <template x-for="(c, ci) in carouselCats" :key="c.id">
+                  <button type="button" @click="send(c.name)" class="group w-[106px] shrink-0 snap-start text-center">
+                    <span class="relative block aspect-square overflow-hidden rounded-2xl border border-sand shadow-sm transition duration-200 group-hover:-translate-y-0.5 group-hover:border-clay/40 group-hover:shadow-lift">
+                      <span
+                        class="grid h-full w-full place-items-center text-[34px] leading-none"
+                        :style="catTint(ci)"
+                        x-text="catEmoji(c.name)"
+                      ></span>
+                      <img
+                        x-show="c.thumb"
+                        :src="img(c.thumb)"
+                        @error="catImgError(c)"
+                        :alt="c.name"
+                        loading="lazy"
+                        class="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-[1.06]"
+                      />
+                      <span class="pointer-events-none absolute inset-0 rounded-2xl ring-1 ring-inset ring-ink/5"></span>
+                    </span>
+                    <span
+                      class="mt-1.5 block truncate text-[12px] font-medium text-ink/80 transition group-hover:text-clay"
+                      x-text="c.name"
+                    ></span>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </div>
 
           <template x-for="(m, mi) in messages" :key="mi">
             <div class="msg-in">
@@ -657,19 +835,23 @@
                         </div>
                       </template>
                     </div>
-
-                    <div x-show="b.type === 'chips' && mi === messages.length - 1" class="flex flex-wrap gap-1.5" x-cloak>
-                      <template x-for="c in (b.chips || [])" :key="c">
-                        <button @click="send(c)" class="rounded-full bg-sand px-3 py-1.5 text-[12px] text-ink/70 transition hover:bg-ink hover:text-cream" x-text="c"></button>
-                      </template>
-                    </div>
                   </div>
                 </template>
 
-                <div x-show="m.chips && m.chips.length && mi === messages.length - 1" class="flex flex-wrap gap-1.5 pl-9">
-                  <template x-for="c in (m.chips || [])" :key="c">
-                    <button @click="onChip(c)" class="rounded-full bg-sand px-3 py-1.5 text-[12px] text-ink/70 transition hover:bg-ink hover:text-cream" x-text="c"></button>
-                  </template>
+                <!-- suggested next steps — contextual guided moves, only on the latest turn -->
+                <div x-show="moves(m, mi).length" class="pl-9 sugg">
+                  <p class="sugg-head">
+                    <svg class="h-3 w-3 shrink-0 text-clay" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l1.7 4.6L18.3 9l-4.6 1.7L12 15.3l-1.7-4.6L5.7 9l4.6-1.4L12 3Z" /></svg>
+                    Suggested next steps
+                  </p>
+                  <div class="flex flex-wrap gap-1.5">
+                    <template x-for="c in moves(m, mi)" :key="c">
+                      <button type="button" @click="onChip(c)" class="chip">
+                        <span x-text="c"></span>
+                        <svg class="chip-ic h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8" /></svg>
+                      </button>
+                    </template>
+                  </div>
                 </div>
 
                 <div x-show="m.tiles" class="grid grid-cols-2 gap-2 pl-9">
@@ -727,8 +909,10 @@
 
          BRAIN  — n8n workflow "agent-chat (prod webhook)" (id oAlPFsGVYAlhZami,
                   webhook path `spike/agent-chat`). POST {message, conversation_id, profile, action?}
-                  -> {reply, conversation_id, blocks[], token_usage}. Full-response wait.
+                  -> {reply, conversation_id, blocks[], suggestions?, token_usage}. Full-response wait.
                   `action` resumes a human-in-the-loop step (variant-picker / approval).
+                  `suggestions` (optional) = agent-authored guided-move chips; when absent
+                  the widget derives them from the turn's blocks + profile (see moves/suggest).
 
          STORE  — every read/write goes to STORE_BASE_URL. Endpoints used (all verified live):
            GET  /api/v3/business-settings?q=<types>   site name, logos, contact, topbar   -> {data:[{type,value,image_url}]}
@@ -759,6 +943,12 @@
          The two human-in-the-loop blocks pause the agent's cart action: a tap posts a
          structured `action` back to the webhook (see sendAction/chooseVariant/decideApproval)
          and the resumed turn executes the add.
+
+         HISTORY — the panel keeps several conversations (localStorage
+           `perfecto_sessions_v1` + `perfecto_active_session`), listed in the
+           header's history drawer. Every conversation owns its own
+           `conversation_id`, so it has its own agent memory AND its own guest
+           cart: switching chats switches both (see syncSession/newChat).
          ══════════════════════════════════════════════════════════════════════ */
       const CFG = {
         N8N: window.__PERFECTO_N8N_CHAT_WEBHOOK || "http://localhost:5678/webhook/spike/agent-chat",
@@ -806,35 +996,79 @@
       const uid = () => "tmp-widget-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const pageOrigin = () => (typeof location !== "undefined" && location.origin ? location.origin : "(unknown)");
 
-      /* Conversation persistence. The server side (n8n PG memory + the store's
-         guest cart) is keyed by `conversation_id`, so keeping that id is what
-         makes the agent remember across reloads; the transcript is kept here so
-         the chat doesn't visually reset. */
-      const CHAT_KEY = "perfecto_chat_v1";
-      const CHAT_MAX = 60;
-      function loadChat() {
-        try {
-          const raw = JSON.parse(localStorage.getItem(CHAT_KEY) || "null");
-          if (!Array.isArray(raw)) return [];
-          return raw
-            .filter((m) => m && (m.role === "user" || m.role === "ai") && typeof m.text === "string")
-            .map((m) => ({
-              role: m.role,
-              text: m.text,
-              blocks: Array.isArray(m.blocks) ? m.blocks : [],
-              chips: Array.isArray(m.chips) ? m.chips : [],
-              tiles: Array.isArray(m.tiles) ? m.tiles : null,
-              options: Array.isArray(m.options) ? m.options : null,
-              retry: typeof m.retry === "string" ? m.retry : null,
-              retryAction: m.retryAction && typeof m.retryAction === "object" ? m.retryAction : null,
-            }));
-        } catch {
-          return [];
-        }
+      /* Chat persistence — several conversations per customer, with history.
+         The server side (n8n PG memory + the store's guest cart) is keyed by
+         `conversation_id`, so each session owns its own id: switching chats
+         switches the agent's memory AND its guest cart. The transcripts are kept
+         here so the panel survives reloads and the customer can flip between
+         past conversations. */
+      const SESS_KEY = "perfecto_sessions_v1";
+      const ACTIVE_KEY = "perfecto_active_session";
+      const CHAT_MAX = 60; // messages kept per session
+      const SESS_MAX = 20; // conversations kept
+      const NEW_TITLE = "New chat";
+
+      function normalizeMessage(m) {
+        return {
+          role: m.role,
+          text: m.text,
+          blocks: Array.isArray(m.blocks) ? m.blocks : [],
+          chips: Array.isArray(m.chips) ? m.chips : [],
+          tiles: Array.isArray(m.tiles) ? m.tiles : null,
+          options: Array.isArray(m.options) ? m.options : null,
+          retry: typeof m.retry === "string" ? m.retry : null,
+          retryAction: m.retryAction && typeof m.retryAction === "object" ? m.retryAction : null,
+        };
       }
-      function saveChat(messages) {
+      function normalizeMessages(raw) {
+        if (!Array.isArray(raw)) return [];
+        return raw.filter((m) => m && (m.role === "user" || m.role === "ai") && typeof m.text === "string").map(normalizeMessage);
+      }
+      /* A conversation is labelled by the first thing the customer asked. */
+      function titleFrom(messages) {
+        const first = (messages || []).find((m) => m.role === "user" && m.text.trim());
+        if (!first) return NEW_TITLE;
+        const t = first.text.replace(/\s+/g, " ").trim();
+        return t.length > 42 ? t.slice(0, 41).trimEnd() + "…" : t;
+      }
+      function loadSessions() {
+        let list = [];
         try {
-          localStorage.setItem(CHAT_KEY, JSON.stringify(messages.slice(-CHAT_MAX)));
+          const raw = JSON.parse(localStorage.getItem(SESS_KEY) || "null");
+          if (Array.isArray(raw)) {
+            list = raw
+              .filter((s) => s && typeof s.id === "string" && s.id)
+              .map((s) => ({
+                id: s.id,
+                title: typeof s.title === "string" && s.title ? s.title : NEW_TITLE,
+                createdAt: Number(s.createdAt) || Date.now(),
+                updatedAt: Number(s.updatedAt) || Number(s.createdAt) || Date.now(),
+                messages: normalizeMessages(s.messages),
+              }));
+          }
+        } catch {}
+        // One-time migration of the pre-history single transcript.
+        if (!list.length) {
+          try {
+            const legacy = normalizeMessages(JSON.parse(localStorage.getItem("perfecto_chat_v1") || "null"));
+            if (legacy.length) {
+              const id = localStorage.getItem("perfecto_conversation_id") || uid();
+              list = [{ id, title: titleFrom(legacy), createdAt: Date.now(), updatedAt: Date.now(), messages: legacy }];
+            }
+          } catch {}
+        }
+        return list;
+      }
+      function saveSessions(list) {
+        try {
+          const trimmed = list.slice(0, SESS_MAX).map((s) => ({
+            id: s.id,
+            title: s.title,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            messages: (s.messages || []).slice(-CHAT_MAX),
+          }));
+          localStorage.setItem(SESS_KEY, JSON.stringify(trimmed));
         } catch {}
       }
 
@@ -1052,6 +1286,11 @@
           typing: false,
           messages: [],
           cid: "",
+          sessions: [],
+          activeId: "",
+          historyOpen: false,
+          catAtStart: true,
+          catAtEnd: false,
           profile: { skin: null, concern: null, budget: null },
           quiz: null,
           skinConcerns: ["Acne", "Dark Spot", "Dryness", "Dullness", "Wrinkles"],
@@ -1063,14 +1302,19 @@
 
           /* ══ lifecycle ══ */
           boot() {
-            this.cid = localStorage.getItem("perfecto_conversation_id") || uid();
-            localStorage.setItem("perfecto_conversation_id", this.cid);
             try {
               const p = JSON.parse(localStorage.getItem("perfecto_profile") || "null");
               if (p && typeof p === "object") this.profile = { ...this.profile, ...p };
             } catch {}
-            this.messages = loadChat();
-            if (!this.messages.length) this.greet();
+            this.sessions = loadSessions();
+            const saved = localStorage.getItem(ACTIVE_KEY) || "";
+            this.activeId = this.sessions.some((s) => s.id === saved) ? saved : this.sessions[0] ? this.sessions[0].id : "";
+            if (this.activeId) {
+              this.syncSession();
+              if (!this.messages.length) this.greet();
+            } else {
+              this.newChat();
+            }
             this.open = localStorage.getItem("perfecto_chat_open") === "1";
             this.loadSettings();
             this.loadCategories();
@@ -1078,17 +1322,128 @@
             this.loadCart();
             this.loadSkinConcerns();
           },
-          resetSession() {
-            localStorage.removeItem("perfecto_profile");
-            localStorage.removeItem(CHAT_KEY);
-            this.profile = { skin: null, concern: null, budget: null };
+
+          /* ══ conversations (multi-session history) ══ */
+          activeSession() { return this.sessions.find((s) => s.id === this.activeId) || null; },
+          // Point the panel at the active session: its transcript is this session's,
+          // and its id is the conversation_id the agent + guest cart are keyed by.
+          syncSession() {
+            const s = this.activeSession();
+            this.messages = s ? (s.messages || []).slice() : [];
+            this.cid = s ? s.id : uid();
             this.quiz = null;
-            this.messages = [];
-            this.cid = uid();
-            localStorage.setItem("perfecto_conversation_id", this.cid);
+          },
+          persist() {
+            const s = this.activeSession();
+            if (s) {
+              const msgs = this.messages.slice();
+              if (msgs.length > CHAT_MAX) msgs.splice(0, msgs.length - CHAT_MAX);
+              s.messages = msgs;
+              s.updatedAt = Date.now();
+              if (s.title === NEW_TITLE) s.title = titleFrom(msgs);
+            }
+            saveSessions(this.sessions);
+            try { localStorage.setItem(ACTIVE_KEY, this.activeId); } catch {}
+          },
+          newChat() {
+            this.persist();
+            const s = { id: uid(), title: NEW_TITLE, createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+            this.sessions.unshift(s);
+            if (this.sessions.length > SESS_MAX) this.sessions.length = SESS_MAX;
+            this.activeId = s.id;
+            this.syncSession();
             this.greet();
+            this.historyOpen = false;
             this.loadCart();
-            this.notify("Started a new session");
+            this.$nextTick(() => this.updateCatEdges());
+          },
+          openSession(id) {
+            this.historyOpen = false;
+            if (id === this.activeId) return;
+            this.persist();
+            this.activeId = id;
+            this.syncSession();
+            this.persist();
+            this.scroll();
+            this.loadCart();
+            this.$nextTick(() => this.updateCatEdges());
+          },
+          deleteSession(id) {
+            this.sessions = this.sessions.filter((s) => s.id !== id);
+            if (!this.sessions.length) {
+              this.newChat();
+            } else {
+              if (id === this.activeId) {
+                this.activeId = this.sessions[0].id;
+                this.syncSession();
+                this.scroll();
+                this.loadCart();
+              }
+              this.persist();
+            }
+            this.notify("Chat deleted");
+          },
+          sessionCount(s) {
+            const n = (s.messages || []).filter((m) => m.role === "user").length;
+            return n ? n + " message" + (n === 1 ? "" : "s") : "New";
+          },
+          relTime(ts) {
+            const d = Date.now() - (Number(ts) || 0);
+            if (d < 60000) return "Just now";
+            const min = Math.floor(d / 60000);
+            if (min < 60) return min + "m ago";
+            const hr = Math.floor(min / 60);
+            if (hr < 24) return hr + "h ago";
+            const days = Math.floor(hr / 24);
+            if (days === 1) return "Yesterday";
+            if (days < 7) return days + "d ago";
+            return new Date(Number(ts)).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+          },
+
+          /* ══ welcome category carousel ══ */
+          // The hero only belongs on a fresh conversation, before the customer says anything.
+          get isWelcome() { return !this.messages.some((m) => m.role === "user"); },
+          // Top aisles, best-stocked first. Empty categories are dead ends — skip them.
+          get carouselCats() {
+            return (this.categories || [])
+              .filter((c) => (c.count || 0) > 0 && !/^uncategor/i.test(c.name))
+              .slice()
+              .sort((a, b) => (b.count || 0) - (a.count || 0))
+              .slice(0, 8);
+          },
+          catEmoji(name) {
+            const n = String(name || "").toLowerCase();
+            if (/skin|face|acne/.test(n)) return "🧖";
+            if (/hair/.test(n)) return "💇";
+            if (/makeup|cosmetic|lip|eye/.test(n)) return "💄";
+            if (/mom|baby|kid/.test(n)) return "🍼";
+            if (/men|shav|beard/.test(n)) return "🧔";
+            if (/personal|bath|body/.test(n)) return "🧴";
+            if (/fragrance|perfume/.test(n)) return "🌸";
+            return "🛍️";
+          },
+          // Soft gradients tinted to the panel's cream/clay palette, rotated per card
+          // so the row reads as a designed set rather than repeated blocks.
+          CAT_TINTS: [
+            "linear-gradient(145deg,#fdeee6,#f6d5c4)",
+            "linear-gradient(145deg,#eef2f5,#d5e0e7)",
+            "linear-gradient(145deg,#f8f1dd,#ecdcb4)",
+            "linear-gradient(145deg,#f4eaf4,#e0cde0)",
+            "linear-gradient(145deg,#e9f1ea,#cfe1d4)",
+            "linear-gradient(145deg,#fbeaea,#edd0d0)",
+          ],
+          catTint(i) { return "background:" + this.CAT_TINTS[i % this.CAT_TINTS.length]; },
+          updateCatEdges() {
+            const el = this.$refs && this.$refs.catScroll;
+            if (!el) return;
+            const max = el.scrollWidth - el.clientWidth;
+            this.catAtStart = el.scrollLeft <= 2;
+            this.catAtEnd = max <= 2 || el.scrollLeft >= max - 2;
+          },
+          scrollCats(dir) {
+            const el = this.$refs && this.$refs.catScroll;
+            if (!el) return;
+            el.scrollBy({ left: dir * Math.max(160, el.clientWidth * 0.8), behavior: "smooth" });
           },
 
           /* ══ helpers ══ */
@@ -1245,8 +1600,31 @@
               this.categories = rows
                 .map((c) => ({ id: Number(c.id) || 0, name: String(c.name ?? "").trim(), count: Number(c.products_count) || 0, icon: c.icon ?? null }))
                 .filter((c) => c.id && c.name);
+              this.loadCategoryThumbs();
+              this.$nextTick(() => this.updateCatEdges());
             } catch {}
           },
+          // Categories carry no artwork of their own, so each carousel card borrows
+          // the first product's photo. NOTE the param is `category` — `/api/v4/products`
+          // silently IGNORES `category_id` (it returns the whole catalogue).
+          // The photo is a progressive enhancement: where the store has no image files
+          // the request 404s, catImgError drops it, and the tinted emoji tile shows.
+          async loadCategoryThumbs() {
+            const cats = (this.categories || []).slice(0, 8);
+            await Promise.all(
+              cats.map(async (c) => {
+                if (c.thumb !== undefined) return;
+                c.thumb = null;
+                try {
+                  const j = await this.get("/api/v4/products?category=" + c.id + "&limit=1");
+                  const p = (firstArray(j) || [])[0];
+                  if (p && p.thumbnail_image) c.thumb = String(p.thumbnail_image);
+                } catch {}
+              })
+            );
+            this.$nextTick(() => this.updateCatEdges());
+          },
+          catImgError(c) { c.thumb = null; },
           async loadSkinConcerns() {
             try {
               const j = await this.get("/api/v3/skin-concerns");
@@ -1477,16 +1855,20 @@
           },
           setOpen(v) {
             this.open = !!v;
+            if (!this.open) this.historyOpen = false;
             try { localStorage.setItem("perfecto_chat_open", this.open ? "1" : "0"); } catch {}
-            if (this.open) this.scroll();
+            if (this.open) {
+              this.scroll();
+              this.$nextTick(() => this.updateCatEdges());
+            }
           },
-          user(text) { this.messages.push({ role: "user", text }); saveChat(this.messages); this.scroll(); },
+          user(text) { this.messages.push({ role: "user", text }); this.persist(); this.scroll(); },
           ai(text, extra = {}) {
             const blocks = (extra.blocks || []).map(normalizeBlock).filter(Boolean);
             const ct = blocks.find((b) => b.type === "cart-table");
             if (ct) this.cart = ct.items;
             this.messages.push({ role: "ai", text, blocks, chips: extra.chips || [], tiles: extra.tiles || null, options: extra.options || null, retry: extra.retry || null, retryAction: extra.retryAction || null });
-            saveChat(this.messages);
+            this.persist();
             this.scroll();
           },
           greet() {
@@ -1504,10 +1886,94 @@
                 { icon: "📦", label: "Track My Order", say: "Where is my order?" },
               ],
             });
-            saveChat(this.messages);
+            this.persist();
           },
           onTile(t) { if (t.quiz) return this.startQuiz(); return this.send(t.say); },
           onChip(c) { if (/skin quiz/i.test(c)) return this.startQuiz(); return this.send(c); },
+          /* Guided moves under the latest assistant turn. The order of preference:
+             the message's own chips, then a `chips` block, then client-derived
+             moves from this turn's blocks + the customer's profile — so every
+             reply ends with a clear next step. Suppressed on older turns, while
+             the agent is working, on error bubbles, and whenever the turn already
+             carries its own calls to action (tiles, or a picker/approval step). */
+          moves(m, mi) {
+            if (!m || m.role !== "ai" || mi !== this.messages.length - 1 || this.typing) return [];
+            if (m.retry) return []; // error bubbles keep just their "Try again"
+            if (Array.isArray(m.tiles) && m.tiles.length) return [];
+            if (Array.isArray(m.chips) && m.chips.length) return this.noEcho(m.chips, m).slice(0, 3);
+            const blocks = m.blocks || [];
+            const chipBlock = blocks.find((b) => b.type === "chips");
+            if (chipBlock && Array.isArray(chipBlock.chips) && chipBlock.chips.length) return this.noEcho(chipBlock.chips, m).slice(0, 3);
+            if (blocks.some((b) => b.type === "variant-picker" || b.type === "approval")) return [];
+            return this.noEcho(this.suggest(m), m).slice(0, 3);
+          },
+          // Never offer a "next step" that just repeats what the customer already
+          // typed: suggesting their own last message back reads as broken.
+          noEcho(list, m) {
+            const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9৳]+/g, " ").replace(/\s+/g, " ").trim();
+            const said = norm(this.lastUserBefore(m));
+            return (list || []).filter((c) => {
+              const nc = norm(c);
+              return nc && (!said || (said !== nc && !said.includes(nc)));
+            });
+          },
+          lastUserBefore(m) {
+            const stop = this.messages.lastIndexOf(m);
+            for (let i = (stop < 0 ? this.messages.length : stop) - 1; i >= 0; i--) {
+              if (this.messages[i].role === "user") return this.messages[i].text;
+            }
+            return "";
+          },
+          // The store's real top-level categories. Those the reply names come first
+          // — the exact options the agent just offered — then the rest by stock.
+          categoryMoves(m) {
+            const cats = (this.categories || []).filter((c) => c && c.name && !/^uncategor/i.test(c.name));
+            const text = " " + String((m && m.text) || "").toLowerCase().replace(/[^a-z0-9&]+/g, " ") + " ";
+            const mentioned = cats
+              .map((c) => ({ c, at: text.indexOf(" " + c.name.toLowerCase() + " ") }))
+              .filter((x) => x.at >= 0 && x.c.name.length >= 4)
+              .sort((a, b) => a.at - b.at)
+              .map((x) => x.c);
+            const byStock = cats.slice().sort((a, b) => (b.count || 0) - (a.count || 0));
+            const out = [];
+            const seen = new Set();
+            for (const c of mentioned.concat(byStock)) {
+              if (!seen.has(c.name)) { seen.add(c.name); out.push(c.name); }
+            }
+            return out;
+          },
+          suggest(m) {
+            const blocks = (m && m.blocks) || [];
+            const has = (t) => blocks.some((b) => b.type === t);
+            const grid = blocks.find((b) => b.type === "product-grid" || b.type === "product-carousel");
+            const products = (grid && grid.products) || [];
+            const out = [];
+            const seen = new Set();
+            const add = (s) => { if (s && !seen.has(s)) { seen.add(s); out.push(s); } };
+            if (products.length) {
+              if (products.length > 1) add("Compare the top " + Math.min(products.length, 3));
+              add("Add the best match to my cart");
+              add("Show cheaper alternatives");
+              add("Build a routine with these");
+            } else if (has("cart-table")) {
+              add("Recommend something for me");
+              add("Show today's offers");
+            } else if (has("order-status")) {
+              add("Track another order");
+              add("Show me bestsellers");
+            } else if (has("comparison")) {
+              add("Which one suits my skin?");
+              add("Add the cheaper one to my cart");
+            } else {
+              // A plain-text turn. When the agent ends on a question it is almost
+              // always narrowing the search, so offer the real categories — the
+              // answer to what it just asked — rather than generic filler.
+              if (/\?/.test(String(m.text || ""))) { for (const c of this.categoryMoves(m)) add(c); }
+              if (!this.profile.skin) add("Take the skin quiz");
+              add("Show today's offers");
+            }
+            return out;
+          },
           async send(raw) { return this.sendAction(raw); },
           // Human-in-the-loop: a variant/approval tap posts a structured `action`.
           // The workflow turns it into a "CUSTOMER ACTION" context line and the
@@ -1569,15 +2035,25 @@
                 return fail("I got an unexpected response from the assistant. Please try again.");
               }
               if (data.conversation_id) {
-                this.cid = data.conversation_id;
-                localStorage.setItem("perfecto_conversation_id", this.cid);
+                if (data.conversation_id !== this.cid) {
+                  // The server minted or renamed the id — keep the active session on it.
+                  const s = this.activeSession();
+                  if (s) s.id = data.conversation_id;
+                  this.cid = data.conversation_id;
+                  this.activeId = data.conversation_id;
+                }
               }
               const reply = typeof data.reply === "string" ? data.reply : "";
               const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+              // The agent may return its own guided moves; they win over the
+              // client-derived ones. Accept both the response-level `suggestions`
+              // and a legacy `chips` array.
+              const rawSugg = Array.isArray(data.suggestions) ? data.suggestions : Array.isArray(data.chips) ? data.chips : [];
+              const chips = rawSugg.filter((s) => typeof s === "string" && s.trim()).slice(0, 3);
               if (!reply.trim() && !blocks.length) {
                 fail("I didn't manage to put an answer together that time.");
               } else {
-                this.ai(reply, { blocks });
+                this.ai(reply, { blocks, chips });
               }
               // The agent may have changed the cart this turn, and it does not always
               // send a cart-table block — re-read the store so the badge/panel always
@@ -1594,7 +2070,7 @@
             const text = m && m.retry;
             if (!text || this.typing) return;
             this.messages = this.messages.filter((x) => x !== m);
-            saveChat(this.messages);
+            this.persist();
             this.request(text, (m && m.retryAction) || undefined);
           },
 
