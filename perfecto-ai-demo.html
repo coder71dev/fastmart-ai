@@ -951,8 +951,8 @@
            cart: switching chats switches both (see syncSession/newChat).
          ══════════════════════════════════════════════════════════════════════ */
       const CFG = {
-        N8N: window.__PERFECTO_N8N_CHAT_WEBHOOK || "http://localhost:5678/webhook/spike/agent-chat",
-        STORE: (window.__PERFECTO_STORE_BASE || "http://fastmart-pro.test").replace(/\/+$/, ""),
+        N8N: window.__PERFECTO_N8N_CHAT_WEBHOOK || "http://127.0.0.1:5678/webhook/spike/agent-chat",
+        STORE: (window.__PERFECTO_STORE_BASE || "https://stg-admin.perfectobd.com").replace(/\/+$/, ""),
       };
 
       const PLACEHOLDER =
@@ -2008,7 +2008,7 @@
             try {
               let r;
               try {
-                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj() };
+                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj(), user_id: 'tmp-widget-muxrl7v04axamq' };
                 if (action) payload.action = action;
                 r = await fetch(CFG.N8N, {
                   method: "POST",

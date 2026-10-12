@@ -8,11 +8,14 @@ const stripSalesHtml = (s) => {
   const i = s.indexOf("{");
   return i > 0 ? s.slice(i) : s;
 };
+// user_id is REQUIRED as of 2026-10-12 (see WIDGET-CONTRACT.md) — the workflow no
+// longer mints a tmp-* id on its own, it 400s with "user_id is required" instead.
+const DEFAULT_USER_ID = "tmp_scratchpad_" + Date.now().toString(36);
 const cases = [
-  { label: "1. product search", body: { message: "find me a serum under 2000 taka" } },
-  { label: "2. product grid blocks", body: { message: "show me 2 sunscreens in a product grid" } },
-  { label: "3. cart view (real cart)", body: { message: "what is in my cart", conversation_id: "tmp_cartfix1" } },
-  { label: "4. plain hello", body: { message: "hi" } },
+  { label: "1. product search", body: { message: "find me a serum under 2000 taka", user_id: DEFAULT_USER_ID } },
+  { label: "2. product grid blocks", body: { message: "show me 2 sunscreens in a product grid", user_id: DEFAULT_USER_ID } },
+  { label: "3. cart view (real cart)", body: { message: "what is in my cart", conversation_id: "tmp_cartfix1", user_id: "tmp_cartfix1" } },
+  { label: "4. plain hello", body: { message: "hi", user_id: DEFAULT_USER_ID } },
 ];
 
 console.log("Sending test messages to:", url);

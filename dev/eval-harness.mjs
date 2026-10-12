@@ -40,11 +40,17 @@ function stripExtraneous(t) {
   return start === Infinity ? t : t.slice(start);
 }
 async function postChat(body) {
+  // The workflow now requires `user_id` (see WIDGET-CONTRACT.md, 2026-10-12) and
+  // no longer mints one on its own — the real widget always has one before it
+  // sends the first message, so mirror conversation_id into it (or mint a fresh
+  // one when a case sends neither) the same way the real widget does.
+  const full = { ...body };
+  if (full.user_id === undefined) full.user_id = full.conversation_id ?? ('tmp_eval_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
   const t0 = now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
+    const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full), signal: ctrl.signal });
     const txt = stripExtraneous(await r.text());
     const json = txt ? JSON.parse(txt) : null;
     return { status: r.status, json, ms: now() - t0 };

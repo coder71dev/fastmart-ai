@@ -115,7 +115,9 @@ async function postChat(message, conversation_id) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, conversation_id }), signal: ctrl.signal });
+    // user_id is REQUIRED as of 2026-10-12 (see WIDGET-CONTRACT.md) — mirror conversation_id
+    // into it, same as the real widget does; the workflow no longer mints one on its own.
+    const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, conversation_id, user_id: conversation_id }), signal: ctrl.signal });
     const txt = stripExtraneous(await r.text());
     let json = null; try { json = txt ? JSON.parse(txt) : null; } catch {}
     return { status: r.status, ok: r.status === 200 && !!json, json, ms: now() - t0 };

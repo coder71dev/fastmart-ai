@@ -15,14 +15,15 @@ Content-Type: application/json
   - Local: `http://localhost:5678`
   - VPS (Part 3): `https://ai.your-domain.com` behind a Caddy/nginx reverse proxy.
 - **Always copy the exact URL from the Webhook node's "Production URL" field in the n8n editor.** n8n registers the path exactly as saved in the workflow (here: `spike/agent-chat`, no workflow-id prefix). If a future edit changes the path or adds a `webhookId`, n8n may register `{workflowId}/webhook/spike/agent-chat` instead — the node's Production URL field is the single source of truth.
-- **Verified live 2026-09-02** against workflow `agent-chat (prod webhook)` (workflow id `oAlPFsGVYAlhZami` in the local instance).
+- **Verified live 2026-09-02**, re-verified **2026-10-12**, against workflow `agent-chat (prod webhook)` (workflow id `oAlPFsGVYAlhZami`). The 2026-10-12 pass found `user_id` had become required (see below) and that `cart-add`'s URL had a typo breaking every add-to-cart call — both are now fixed in the live workflow and in `dev/build-main.mjs`.
 
 ## Request body
 
 ```jsonc
 {
-  "message": "find me a serum under 2000 taka",   // user text (required)
-  "conversation_id": "tmp-widget-<uuid>",           // optional; widget keeps it in localStorage
+  "message": "find me a serum under 2000 taka",   // user text (falls back to "Hi" if omitted)
+  "user_id": "tmp-widget-<uuid>",                   // REQUIRED — the widget keeps it in localStorage; the workflow 400s with {"error":"user_id is required"} if missing
+  "conversation_id": "tmp-widget-<uuid>",           // optional, same value as user_id; echoed back as-is
   "profile": { "skin": "Oily", "concern": "Acne", "budget": "Under Tk 1500" }, // optional, quiz
   "action": { "type": "variant-selected", "product_id": 100, "variant": "45ml", "quantity": 1 } // optional; resumes a human-in-the-loop step
 }
@@ -30,12 +31,14 @@ Content-Type: application/json
 
 `action` is how the widget answers a `variant-picker` / `approval` block (see **Human-in-the-loop** below). Omit it for a normal turn.
 
+`user_id` must be minted and persisted by the widget itself (e.g. `tmp-widget-<uuid>` in localStorage, same value used for `conversation_id`) — the workflow no longer mints one from `conversation_id` on its own. This must be a *per-browser* value; reusing one fixed id across different customers shares their guest cart and chat memory.
+
 ## Response (HTTP 200, `application/json`)
 
 ```jsonc
 {
   "reply": "string",                 // agent text (mirror of $fromAI('output'))
-  "conversation_id": "string",       // echoed when provided, else a fresh guest id
+  "conversation_id": "string",       // exact echo of the `user_id` sent in the request
   "blocks": [ ...OutputBlock... ],   // may be empty array
   "suggestions": ["string", ...],    // optional; guided next-step chips (<=3 shown)
   "token_usage": null                // reserved; see note below
@@ -144,7 +147,7 @@ Products in blocks come from the store search result; cart-table items are mappe
 | `wf5-test-bucket.json` | **Test-bucket** helper workflow (immediate webhook round-trip check) — optional |
 | `scratchpad-verify.mjs` | Fires test conversations (product search, product-grid blocks, cart view) at the webhook URL and prints `reply` + `blocks` + timing. Usage: `node scratchpad-verify.mjs [webhook-url]` (defaults to `http://localhost:5678/webhook/spike/agent-chat`) |
 
-The widget fork (in `biz-buddy`, `storefront-widget.tsx`) POSTs `{message, conversation_id, profile?}` to this webhook by default and renders `{reply, blocks}` as an `answer` bubble. Set `window.__PERFECTO_CHAT_MODE = 'laravel'` on the host page to keep the old SSE brain; override the URL via `window.__PERFECTO_N8N_CHAT_WEBHOOK`.
+The widget fork (in `biz-buddy`, `storefront-widget.tsx`) POSTs `{message, user_id, conversation_id, profile?}` to this webhook by default and renders `{reply, blocks}` as an `answer` bubble. Set `window.__PERFECTO_CHAT_MODE = 'laravel'` on the host page to keep the old SSE brain; override the URL via `window.__PERFECTO_N8N_CHAT_WEBHOOK`.
 
 ### How to see it in a browser (verify the widget fork)
 

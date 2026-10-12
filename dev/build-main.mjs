@@ -40,14 +40,18 @@ const WEBHOOK_ID = '9c2a1d7e-4b4f-4d9e-9c0a-1f2a3b4c5d6e';
 // ---------------------------------------------------------------------------
 const PREPARE_CODE = `
 const body = $input.first().json.body ?? {};
-const msgRaw = (body.message ?? '').toString().trim();
-const cid = (body.conversation_id ?? '').toString().trim();
+let msgRaw = (body.message ?? body.chatInput ?? '').toString().trim();
+const userId = (body.user_id ?? body.userId ?? '').toString().trim();
 const profile = (body.profile && typeof body.profile === 'object') ? body.profile : null;
 const evalMode = body.eval === true || body.eval === 'true';
-if (!msgRaw) throw new Error('widget: message is required');
-const userId = (cid && cid.startsWith('tmp')) ? cid : ('tmp-widget-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+if (!msgRaw) {
+  msgRaw = 'Hi';
+}
+if (!userId) {
+  return [{ json: { error: 'user_id is required', status: 400 }, pairedItem: { item: 0 } }];
+}
 
-const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+const base = ($env.STORE_BASE_URL || 'https://stg-admin.perfectobd.com').replace(/\\/+$/, '');
 
 function textOf(r) {
   if (typeof r === 'string') return r;
@@ -105,15 +109,21 @@ if (catsRes && Array.isArray(catsRes.data)) {
 
 if (userId.startsWith('tmp')) {
   const read = await call(base + '/api/v3/carts/' + encodeURIComponent(userId), { method: 'POST' });
+  let rawList = [];
   if (Array.isArray(read)) {
-    for (const shop of read) {
-      for (const it of (shop && shop.cart_items) || []) {
-        if (!it) continue;
-        const price = Number(it.price) || 0;
-        const qty = Number(it.quantity) || 0;
-        items.push({ product_id: it.product_id, name: it.product_name || 'Product', quantity: qty, line: price * qty });
-        count += qty;
-      }
+    rawList = read;
+  } else if (read && typeof read === 'object') {
+    if (Array.isArray(read.data)) rawList = read.data;
+    else rawList = [read];
+  }
+  for (const shop of rawList) {
+    for (const it of (shop && (shop.cart_items || shop.items)) || []) {
+      if (!it) continue;
+      const price = Number(it.price || it.calculable_price || 0) || 0;
+      const qty = Number(it.quantity) || 0;
+      const pname = it.product_name || it.name || 'Product';
+      items.push({ product_id: it.product_id || it.id, name: pname, quantity: qty, line: price * qty });
+      count += qty;
     }
   }
   const sum = await call(base + '/api/v3/cart-summary/' + encodeURIComponent(userId));
@@ -288,7 +298,7 @@ function guardTotal(reply, actual) {
     return pre + fmtTaka(actual).slice(1);
   });
 }
-const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+const base = ($env.STORE_BASE_URL || 'https://stg-admin.perfectobd.com').replace(/\\/+$/, '');
 function textOf(r) {
   if (typeof r === 'string') return r;
   if (r && typeof r === 'object') {
