@@ -175,13 +175,13 @@ if (items.length) {
 }
 parts.push(cartTxt);
 
-if (profile) {
-  const bits = [];
-  if (profile.skin) bits.push('Skin: ' + profile.skin);
-  if (profile.concern) bits.push('Concern: ' + profile.concern);
-  if (profile.budget) bits.push('Budget: ' + profile.budget);
-  if (bits.length) parts.push('CUSTOMER PROFILE: ' + bits.join(' | '));
-}
+// Always emit this line, even with nothing saved — an explicit "not provided"
+// per field is what lets the orchestrator tell "nothing known yet" apart from
+// "this turn just has no CUSTOMER PROFILE block", and ask for exactly the
+// fields actually missing instead of guessing or re-asking ones it already has.
+parts.push('CUSTOMER PROFILE: Skin: ' + ((profile && profile.skin) || 'not provided') +
+  ' | Concern: ' + ((profile && profile.concern) || 'not provided') +
+  ' | Budget: ' + ((profile && profile.budget) || 'not provided'));
 
 if (actionLine) parts.push(actionLine);
 
