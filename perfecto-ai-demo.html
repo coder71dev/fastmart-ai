@@ -2008,7 +2008,7 @@
             try {
               let r;
               try {
-                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj(), user_id: 'tmp-widget-muxrl7v04axamq' };
+                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj(), user_id: this.cid };
                 if (action) payload.action = action;
                 r = await fetch(CFG.N8N, {
                   method: "POST",

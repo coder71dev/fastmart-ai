@@ -73,7 +73,10 @@ async function storeCart(userId) {
   } catch {}
   return rows;
 }
-const cardsOf = (d) => d.blocks?.find((b) => b.type === 'product-grid')?.products ?? [];
+// The orchestrator prompt legitimately picks either block for a product list
+// (grid vs. carousel) — recognize both, otherwise this falsely "fails" on a
+// correct answer purely because the model chose the other valid layout.
+const cardsOf = (d) => d.blocks?.find((b) => b.type === 'product-grid' || b.type === 'product-carousel')?.products ?? [];
 const cartOf = (d) => d.blocks?.find((b) => b.type === 'cart-table');
 
 function check(name, hard, fn) {
