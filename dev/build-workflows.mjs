@@ -166,6 +166,17 @@ const j = $input.first().json ?? {};
 const kw = String(j.query ?? j.input ?? '').trim().slice(0, 120) || 'popular';
 const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
 
+// The store's keyword search ranks by RELEVANCE, never by price, and "limit=6"
+// only ever samples that relevance-ranked order. For a price-driven ask (e.g.
+// "cheapest facewash") the actual lowest-priced match in the catalogue often
+// isn't even in that top-6 slice, and even among what IS returned, leaving the
+// sort to the model is unreliable. When the ask looks price-driven, fetch a
+// wider pool and re-sort it ourselves by the REAL price the customer pays —
+// see num()/nonformated_price below, not the store's own "sort=price_low_high"
+// (verified 2026-10-12: that sorts by the pre-discount "stroked" price, so a
+// steeply-discounted item can rank behind a barely-discounted pricier one).
+const wantsCheapest = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|less\\s+than|under|below)\\b/i.test(kw);
+
 // Returns { ok, status, body } — the STATUS matters. The old version resolved
 // null on any trouble and threw the status away, so a 500 from the store (its
 // Meilisearch down) was indistinguishable from "no products matched": the agent
@@ -197,9 +208,14 @@ function firstJson(s) {
 function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : 0; }
 function taka(n) { return '\u09f3' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
 
-const res = await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(kw) + '&limit=6');
+const fetchLimit = wantsCheapest ? 30 : 6;
+const res = await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(kw) + '&limit=' + fetchLimit);
 const parsed = firstJson(res.ok ? res.body : null);
-const arr = parsed && Array.isArray(parsed.data) ? parsed.data : [];
+let arr = parsed && Array.isArray(parsed.data) ? parsed.data : [];
+if (wantsCheapest && arr.length) {
+  const priceOf = (p) => num(p.nonformated_price) || num(p.main_price) || num(p.web_price);
+  arr = arr.slice().sort((a, b) => priceOf(a) - priceOf(b)).slice(0, 6);
+}
 
 // A search that never ran is NOT a search that found nothing. Say so in a form
 // the specialist cannot mistake for an empty catalogue, and forbid the wording
