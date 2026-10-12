@@ -602,7 +602,14 @@ const connections = {};
 
 nodes.push(
   node({
-    parameters: { httpMethod: 'POST', path: 'spike/agent-chat', responseMode: 'lastNode', options: {} },
+    // responseNode (not lastNode): a missing user_id must come back as a real
+    // HTTP 400 with the documented error body, not whatever the last node that
+    // happened to run produced. lastNode mode has no per-execution status code,
+    // so the "clean 400" Prepare Input already builds as DATA never reached the
+    // client as one — the malformed item just flowed into AI Agent, which has no
+    // chatInput to work with, and crashed into an opaque 500 "Error in workflow"
+    // instead (verified live 2026-10-13, see dev/eval-harness.mjs "contract" group).
+    parameters: { httpMethod: 'POST', path: 'spike/agent-chat', responseMode: 'responseNode', options: {} },
     name: 'Webhook',
     type: 'n8n-nodes-base.webhook',
     typeVersion: 2,
@@ -617,6 +624,58 @@ nodes.push(
     type: 'n8n-nodes-base.code',
     typeVersion: 2,
     position: pos(220, 0),
+  }),
+);
+nodes.push(
+  node({
+    // True branch = Prepare Input's { error, status } shape (missing user_id) —
+    // respond 400 immediately and never reach AI Agent/PG Memory, which have
+    // nothing to work with and were what actually threw the 500 before this.
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 3 },
+        combinator: 'and',
+        conditions: [
+          {
+            id: 'user-id-missing',
+            leftValue: "={{ $json.error || '' }}",
+            rightValue: 'user_id is required',
+            operator: { type: 'string', operation: 'equals' },
+          },
+        ],
+      },
+      options: {},
+    },
+    name: 'User ID Present?',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.3,
+    position: pos(340, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      respondWith: 'json',
+      responseBody: '={{ $json }}',
+      options: { responseCode: 400 },
+    },
+    name: 'Respond 400',
+    type: 'n8n-nodes-base.respondToWebhook',
+    typeVersion: 1.4,
+    position: pos(460, 200),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      respondWith: 'json',
+      responseBody: '={{ $json }}',
+      options: {},
+    },
+    name: 'Respond Success',
+    type: 'n8n-nodes-base.respondToWebhook',
+    typeVersion: 1.4,
+    position: pos(940, 0),
   }),
 );
 nodes.push(
@@ -690,10 +749,13 @@ nodes.push(
 );
 
 connections['Webhook'] = { main: [[{ node: 'Prepare Input', type: 'main', index: 0 }]] };
-connections['Prepare Input'] = { main: [[{ node: 'AI Agent', type: 'main', index: 0 }]] };
+connections['Prepare Input'] = { main: [[{ node: 'User ID Present?', type: 'main', index: 0 }]] };
+// If output 0 = true (error present) -> Respond 400; output 1 = false (normal) -> AI Agent.
+connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
 connections['AI Agent'] = { main: [[{ node: 'Response', type: 'main', index: 0 }]] };
+connections['Response'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
 
 const wf = {
   name: 'agent-chat (prod webhook)',
