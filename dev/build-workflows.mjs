@@ -177,6 +177,20 @@ const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/
 // steeply-discounted item can rank behind a barely-discounted pricier one).
 const wantsCheapest = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|less\\s+than|under|below)\\b/i.test(kw);
 
+// Color/shade asks ("maroon lipstick") are a dead end on both sides: the store's
+// keyword search is a literal text match against the product NAME only, so a
+// color word that appears nowhere in any product's name returns ZERO results
+// (verified 2026-10-13: "maroon lipstick" = 0 hits, "lipstick" alone = 10) — so
+// the color word must come OUT of the store query. And shades are free-text
+// marketing names ("Brick Pink", "Scarlet Whisper"), never literal colors, so
+// there is nothing to filter on even if it did match — only the model's own
+// color judgment can map "maroon" to the shade list. The store's product list
+// already carries choice_options (shade names) on every item; this tool just
+// has to stop throwing that away and stop sending the color word to the store.
+const COLOR_RE = /\\b(red|pink|hot\\s*pink|maroon|wine|burgundy|oxblood|nude|beige|brown|chocolate|black|white|blue|navy|green|yellow|orange|purple|violet|lilac|gold(en)?|silver|coral|peach|mauve|berry|rose|plum|rust|bronze|copper|gr[ae]y|lavender|mint|teal|turquoise|cream|ivory|tan|olive|magenta|fuchsia|crimson|scarlet|charcoal)\\b/i;
+const wantsColor = COLOR_RE.test(kw);
+const storeKw = wantsColor ? (kw.replace(COLOR_RE, ' ').replace(/\\s{2,}/g, ' ').trim() || kw) : kw;
+
 // Returns { ok, status, body } — the STATUS matters. The old version resolved
 // null on any trouble and threw the status away, so a 500 from the store (its
 // Meilisearch down) was indistinguishable from "no products matched": the agent
@@ -209,7 +223,7 @@ function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9
 function taka(n) { return '\u09f3' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
 
 const fetchLimit = wantsCheapest ? 30 : 6;
-const res = await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(kw) + '&limit=' + fetchLimit);
+const res = await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(storeKw) + '&limit=' + fetchLimit);
 const parsed = firstJson(res.ok ? res.body : null);
 let arr = parsed && Array.isArray(parsed.data) ? parsed.data : [];
 if (wantsCheapest && arr.length) {
@@ -236,12 +250,18 @@ const lines = arr.map((p) => {
   const size = p.custom_size ? ' ' + String(p.custom_size) : '';
   const disc = (was > price && price > 0) ? ' (was ' + taka(was) + ')' : '';
   const hasOpts = (p.variant_product === true || Number(p.variant_product) > 0);
-  const opts = hasOpts ? ' | SIZE OPTIONS (choose one)' : ' | no size options';
+  const shadeNames = wantsColor && Array.isArray(p.choice_options) && Array.isArray(p.choice_options[0] && p.choice_options[0].options)
+    ? p.choice_options[0].options.slice(0, 12)
+    : null;
+  const opts = shadeNames && shadeNames.length
+    ? ' | SHADES: ' + shadeNames.join(', ')
+    : (hasOpts ? ' | SIZE OPTIONS (choose one)' : ' | no size options');
   return '- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + taka(price) + disc + ' | ' + stock + opts;
 });
 
 const text = 'Search "' + kw + '" - ' + arr.length + ' result(s), prices in BDT (\u09f3):\\n' + lines.join('\\n') +
-  '\\nPass an id= to cart-add or product_detail. Only recommend or add items marked IN STOCK. A size printed in the product name (e.g. "(50ml)") is part of the name — it is NOT an option. Only a line marked "SIZE OPTIONS" needs a chosen option name (call product_detail for the exact names).';
+  '\\nPass an id= to cart-add or product_detail. Only recommend or add items marked IN STOCK. A size printed in the product name (e.g. "(50ml)") is part of the name — it is NOT an option. Only a line marked "SIZE OPTIONS" needs a chosen option name (call product_detail for the exact names).' +
+  (wantsColor ? '\\nA line marked "SHADES" lists that product' + "'" + 's real shade names (not literal colors) - use your own color judgment to pick the one(s) that plausibly match what the customer asked for, and pass the EXACT shade text as the variant when it is added to cart.' : '');
 return [{ json: { text } }];
 `;
 

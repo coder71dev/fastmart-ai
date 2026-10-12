@@ -298,6 +298,37 @@ function guardTotal(reply, actual) {
     return pre + fmtTaka(actual).slice(1);
   });
 }
+// The model is asked (dev/prompts.js) not to re-list "- **Name** – ৳price" when
+// the product-grid card already shows it, but that instruction is not reliably
+// followed — verified live 2026-10-13: it still wrote the list, in varying
+// formats (different bullet glyphs, a trailing generic clause), after 3
+// escalating prompt rewrites. This is the deterministic backstop. A line only
+// counts as redundant (and gets stripped) when it names ONE product in bold,
+// quotes a ৳ price, and adds no second distinguishing fact — a SECOND bold
+// span or the word "shade" (e.g. a color-search line picking a specific shade,
+// which the card cannot show) means the line carries real information and is
+// left alone, regardless of its exact bullet/format.
+function stripRedundantProductLines(s) {
+  const lines = String(s ?? '').split('\\n');
+  const bulletRe = /^[-*•●‣·]\\s*/;
+  const isRedundant = (raw) => {
+    const l = raw.trim();
+    if (!bulletRe.test(l)) return false;
+    const rest = l.replace(bulletRe, '');
+    const boldSpans = rest.match(/\\*\\*(.+?)\\*\\*/g) || [];
+    if (boldSpans.length !== 1) return false; // 0 = not naming a product; 2+ = likely a shade/variant call-out
+    // Keywords that mean the line carries real structure beyond "here is this
+    // product again" — a chosen shade, a routine step, or a size the card's
+    // own name/price can't convey — leave those lines alone.
+    if (/\\b(shade|step|morning|night|variant)\\b/i.test(rest)) return false;
+    return true;
+  };
+  const kept = lines.filter((l) => !isRedundant(l));
+  // Only treat it as the redundant-list pattern (and actually drop anything) when
+  // 2+ lines matched — a single bolded name+price is normal single-product prose.
+  if (lines.length - kept.length < 2) return s;
+  return kept.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+}
 const base = ($env.STORE_BASE_URL || 'https://stg-admin.perfectobd.com').replace(/\\/+$/, '');
 function textOf(r) {
   if (typeof r === 'string') return r;
@@ -490,6 +521,7 @@ if (doGrid && ids.length) {
       blocks.push({ type: 'product-grid', products: cards });
       const gridTotal = cards.reduce((s, c) => s + c.price, 0);
       replyTxt = guardTotal(replyTxt, gridTotal);
+      if (cards.length >= 2) replyTxt = stripRedundantProductLines(replyTxt);
     }
   } catch {}
 }
