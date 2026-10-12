@@ -6,7 +6,7 @@
 // thing being graded, and can run against local or VPS later.
 //
 // Usage:
-//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|product|cart|support|memory|language]
+//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language]
 //   node dev/eval-harness.mjs --out report.json
 //
 // Exit code 0 = no HARD failures; 1 = at least one HARD failure.
@@ -129,6 +129,28 @@ battery.push(['no invented product for nonsense query', 'product', false, async 
   return { ok: r.length > 10 && negates && !namesItAsReal, detail: r.slice(0, 90) };
 }]);
 
+// ---- contract ---------------------------------------------------------------
+// user_id became REQUIRED 2026-10-12 (see WIDGET-CONTRACT.md) \u2014 the workflow no
+// longer mints one from conversation_id on its own. This calls the webhook raw
+// (not through postChat, which deliberately back-fills user_id for every other
+// case here) so it actually exercises the "neither field sent" path a brand new,
+// misconfigured, or third-party caller could hit.
+battery.push(['user_id is required \u2014 a request with neither field 400s, not 500s', 'contract', true, async () => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  let r;
+  try {
+    r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'hello' }), signal: ctrl.signal });
+  } finally { clearTimeout(timer); }
+  const txt = stripExtraneous(await r.text());
+  let json = null; try { json = txt ? JSON.parse(txt) : null; } catch {}
+  // A clean 400 with the documented error is correct; a 500 ("Error in workflow")
+  // means the missing-id case crashes downstream nodes instead of failing cleanly
+  // \u2014 this is exactly the failure mode a 2026-10-12 incident produced live.
+  const ok = r.status === 400 && json?.error === 'user_id is required';
+  return { ok, detail: `http ${r.status} \u2014 ${JSON.stringify(json)}` };
+}]);
+
 // ---- cart (sequential on one guest id: add -> view -> remove) -------------
 // Cart totals/blocks come from the store's own cart reads inside the workflow
 // (independent cookie-less HTTP requests each turn — the same channel the widget
@@ -223,6 +245,53 @@ battery.push(['size-option product is asked via picker, not guessed', 'hitl', fa
   return { ok, detail: `${vp.productName}: ${JSON.stringify(vp.options)}` };
 }]);
 
+// ---- search quality ---------------------------------------------------------
+// "cheapest facewash" used to surface a pricier item (or even miss the catalog's
+// actually-cheapest match entirely) because the search tool never sorted by
+// price — see dev/build-workflows.mjs SEARCH_CODE (fixed 2026-10-12). Catalog
+// prices can drift, so this asserts the STRUCTURAL guarantee (ascending order
+// among whatever cards came back), not a specific product or price.
+battery.push(['"cheapest" query returns price-ascending results', 'search', true, async () => {
+  const { json } = await postChat({ message: 'cheapest facewash' });
+  const cards = cardsOf(json);
+  if (cards.length < 2) return { ok: false, detail: `only ${cards.length} card(s), can't verify ordering` };
+  const prices = cards.map((c) => c.price);
+  const ascending = prices.every((p, i) => i === 0 || p >= prices[i - 1]);
+  return { ok: ascending, detail: `prices: ${JSON.stringify(prices)}` };
+}]);
+
+// A color/shade ask like "maroon lipstick" used to return ZERO results — the
+// store's keyword search is a literal match against the product NAME only, and
+// no product is ever literally named a color (fixed 2026-10-13: the color word
+// is stripped before the store call; shade names are surfaced so the model can
+// judge the match itself). The exact shade picked is a judgment call (soft);
+// that real products come back at all is the hard, structural guarantee.
+battery.push(['color/shade search ("maroon lipstick") finds real products', 'search', true, async () => {
+  const { json } = await postChat({ message: 'I want a maroon lipstick' });
+  const cards = cardsOf(json);
+  return { ok: cards.length > 0, detail: cards.length ? `${cards.length} cards: ${cards.map((c) => c.name).join(', ')}` : (json?.reply ?? '').slice(0, 120) };
+}]);
+
+// The model is asked (dev/prompts.js PRODUCT_DISCOVERY) not to re-list
+// "- **Name** – ৳price" in prose when the product-grid card already shows it,
+// which proved unreliable through 3 prompt rewrites, so a deterministic strip
+// backstop lives in the Response node (dev/build-main.mjs, 2026-10-13). This
+// is the regression test for that backstop, not for prompt wording.
+battery.push(['multi-product reply does not re-list names/prices already on the cards', 'search', true, async () => {
+  const { json } = await postChat({ message: 'cheapest facewash' });
+  const cards = cardsOf(json);
+  if (cards.length < 2) return { ok: false, detail: `only ${cards.length} card(s), test needs 2+` };
+  const lines = (json?.reply ?? '').split('\n');
+  const redundantLines = lines.filter((l) => {
+    const t = l.trim();
+    if (!/^[-*•●‣·]\s*/.test(t)) return false;
+    const rest = t.replace(/^[-*•●‣·]\s*/, '');
+    const boldSpans = rest.match(/\*\*(.+?)\*\*/g) || [];
+    return boldSpans.length === 1 && !/\b(shade|step|morning|night|variant)\b/i.test(rest);
+  });
+  return { ok: redundantLines.length === 0, detail: redundantLines.length ? JSON.stringify(redundantLines) : `clean prose, ${cards.length} cards carry the details` };
+}]);
+
 // ---- support --------------------------------------------------------------
 battery.push(['return policy answer', 'support', false, async () => {
   const { json } = await postChat({ message: 'what is your return policy?' });
@@ -248,6 +317,46 @@ battery.push(['remembers earlier detail across turns', 'memory', false, async ()
   const { json } = await postChat({ message: 'what skin type and budget did I tell you?', conversation_id: MEM_ID });
   const r = json?.reply ?? '';
   return { ok: /oily/i.test(r) && /\b700\b/.test(r), detail: r.slice(0, 110) };
+}]);
+
+// ---- profile awareness -------------------------------------------------------
+// When recommending for a general need, the orchestrator should give its best
+// answer with whatever it knows, then ask ONE combined question for whichever
+// of skin/concern/budget CUSTOMER PROFILE marks "not provided" — never block
+// the recommendation on it, and never re-ask a field already saved (dev/
+// prompts.js ORCHESTRATOR + dev/build-main.mjs Prepare Input, 2026-10-13).
+// Wording is the model's own, so these are soft — they check for the shape of
+// "did it ask", not an exact phrase.
+function trailingQuestion(r) {
+  const m = String(r ?? '').match(/[^.!?\n]*\?\s*$/);
+  return m ? m[0] : '';
+}
+const mentionsProfileField = (s) => /\bskin\b|\bconcern\b|\bbudget\b/i.test(s);
+
+battery.push(['no saved profile: still recommends, then asks what is missing', 'profile', false, async () => {
+  const { json } = await postChat({ message: 'what moisturizer should I use' });
+  const cards = cardsOf(json);
+  const q = trailingQuestion(json?.reply);
+  return { ok: cards.length > 0 && !!q && mentionsProfileField(q), detail: `cards=${cards.length}, trailing question: "${q}"` };
+}]);
+
+battery.push(['full saved profile: recommends without re-asking', 'profile', false, async () => {
+  const { json } = await postChat({ message: 'what moisturizer should I use', profile: { skin: 'Oily', concern: 'Acne', budget: 'Under Tk 1500' } });
+  const cards = cardsOf(json);
+  const q = trailingQuestion(json?.reply);
+  // A trailing "?" is fine (e.g. "want me to add one?") as long as it is not
+  // itself asking for skin/concern/budget, since all three are already known.
+  const reaskedProfile = !!q && mentionsProfileField(q);
+  return { ok: cards.length > 0 && !reaskedProfile, detail: `cards=${cards.length}, trailing question: "${q}"` };
+}]);
+
+battery.push(['partial saved profile: asks only for what is still missing', 'profile', false, async () => {
+  const { json } = await postChat({ message: 'what moisturizer should I use', profile: { skin: 'Dry' } });
+  const cards = cardsOf(json);
+  const q = trailingQuestion(json?.reply);
+  const asksBudgetOrConcern = /\bconcern\b|\bbudget\b/i.test(q);
+  const reasksSkinType = /what'?s? your skin type|your skin type\b.*\?/i.test(q);
+  return { ok: cards.length > 0 && asksBudgetOrConcern && !reasksSkinType, detail: `cards=${cards.length}, trailing question: "${q}"` };
 }]);
 
 // ---- language --------------------------------------------------------------
