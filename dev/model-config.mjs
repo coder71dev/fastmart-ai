@@ -15,8 +15,12 @@
 // var every time: { "MODEL_PROVIDER": "gemini" }. An explicit env var still
 // overrides this file for a one-off run.
 //
-// MODEL overrides just the model id inside the chosen provider (e.g.
-// MODEL=google/gemini-3.7-flash keeps Command Code but changes the model).
+// MODEL overrides just the model id inside the chosen provider for ONE run
+// (e.g. MODEL=google/gemini-3.7-flash keeps Command Code but changes the
+// model). It can ALSO be pinned per instance the same way as MODEL_PROVIDER —
+// { "MODEL_PROVIDER": "gemini", "MODEL": "models/gemini-3.5-flash-lite" } in
+// .n8n-credentials.json — so the instance's chosen model survives a plain
+// sync.mjs run too, not just its provider.
 //
 // Credential names are instance-specific. Read from .n8n-credentials.json
 // (created once by the user). Env vars override everything.
@@ -73,7 +77,7 @@ function resolve() {
     nodeName: p.nodeName,
     type: p.type,
     provider: key,
-    model: process.env.MODEL || p.model,
+    model: process.env.MODEL || credConfig.MODEL || p.model,
     credentials: { [p.credKey]: { id, name } },
     param: p.param,
   };
