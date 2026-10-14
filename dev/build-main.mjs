@@ -27,6 +27,12 @@ const SPEC = {
 };
 const N8N = { spec: SPEC };
 
+// tool-current-offers (dev/build-workflows.mjs) is a direct tool on the
+// orchestrator, not a specialist, so it has no pre-existing instance id on a
+// fresh install — same placeholder convention as SEARCH_TOOL_ID/DETAIL_TOOL_ID
+// in build-workflows.mjs. dev/sync.mjs deploys it first and fills this in.
+const OFFERS_TOOL_ID = process.env.OFFERS_TOOL_ID || 'REPLACE_WITH_OFFERS_TOOL_ID';
+
 // Node ids are DERIVED FROM THE NODE NAME, not random — see dev/node-id.mjs.
 // A random id on every build breaks canvas groups and any other n8n-side
 // reference to the old id when the workflow is PATCHed.
@@ -233,6 +239,11 @@ const SPECIALIST_TOOLS = [
   specTool('support_specialist', P.TOOL.supportSpecialist, SPEC.supportSpecialist),
   specTool('cart_specialist', P.TOOL.cartSpecialist, SPEC.cartSpecialist),
   specTool('order_management', P.TOOL.orderManagement, SPEC.orderSpecialist),
+  // Not a specialist sub-agent on purpose: "show me current offers" needs no
+  // multi-step reasoning, just a straight read, so it skips a whole LLM
+  // round-trip the same way cart-add does. Backed by tool-current-offers
+  // (dev/build-workflows.mjs OFFERS_CODE).
+  specTool('get_current_offers', P.TOOL.currentOffers, OFFERS_TOOL_ID),
 ];
 
 // Cart-add stays on orchestrator (orchestrator searches via product_discovery, then adds directly)
@@ -284,6 +295,7 @@ function stripFooter(s) {
     .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
     .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
     .trim();
 }
 function normalizeCurrency(s) {
@@ -409,19 +421,37 @@ function toCard(p) {
     if (!id || !name || !(price > 0)) return null;
     const brand = p.brand && typeof p.brand === 'object' ? (p.brand.name ?? null) : (p.brand ?? null);
     const cat = p.category && typeof p.category === 'object' ? (p.category.name ?? null) : (p.category ?? null);
-    const vars = Array.isArray(p.variant) ? p.variant.map((v) => ({ id: Number(v.id) || 0, name: String(v.variant ?? v.name ?? ''), price: Number(v.discount_price ?? v.price ?? 0) || 0 })).filter((v) => v.id) : [];
+    // qty travels all the way to the widget's variant-picker/quick-view (the
+    // only place it was previously used), kept here too so a SINGLE place
+    // computes "is this variant purchasable" for both that and in_stock below.
+    const vars = Array.isArray(p.variant) ? p.variant.map((v) => ({ id: Number(v.id) || 0, name: String(v.variant ?? v.name ?? ''), price: Number(v.discount_price ?? v.price ?? 0) || 0, qty: Number(v.qty) || 0 })).filter((v) => v.id) : [];
     const desc = String(p.short_description ?? p.description ?? '').replace(/<[^>]+>/g, '').replace(/\\s+/g, ' ').trim().slice(0, 300) || null;
-    return { id, name, slug: String(p.slug ?? ''), price, rating: Number(p.rating ?? 0) || 0, reviewCount: Number(p.num_of_sale ?? p.total_reviews ?? 0) || 0, description: desc, image: p.thumbnail_image ?? null, thumbnail: p.thumbnail_image ?? null, category: cat, brand, hasVariants: vars.length > 0, variants: vars };
+    // The store's v3 detail reports the PARENT as in_stock=false / current_stock=0
+    // for a variant product even when one of its SIZES has real stock (e.g.
+    // product 1 is parent in_stock=false with a 30ml variant qty=13) - so this is
+    // "is ANYTHING about this product purchasable", not just the parent flag.
+    // snake_case to match what the widget's own toCard() already reads off a raw
+    // store product (p.in_stock) - the chat block is just another product source.
+    const parentOut = p.in_stock === false || p.in_stock === 0 || p.in_stock === '0';
+    const inStock = !parentOut || vars.some((v) => v.qty > 0);
+    // variant_product (not just hasVariants) because the widget's OWN toCard()
+    // (perfecto-ai-demo.html) decides whether a card needs a size choice by
+    // checking p.variant_product / p.variant / p.choice_options - the raw store
+    // field names, which this chat-block object never had. Without it a variant
+    // product from a chat card silently fell through to a plain Add click (no
+    // variant argument), which the store's cart-add rejects.
+    return { id, name, slug: String(p.slug ?? ''), price, rating: Number(p.rating ?? 0) || 0, reviewCount: Number(p.num_of_sale ?? p.total_reviews ?? 0) || 0, description: desc, image: p.thumbnail_image ?? null, thumbnail: p.thumbnail_image ?? null, category: cat, brand, hasVariants: vars.length > 0, variants: vars, variant_product: vars.length > 0 ? 1 : 0, in_stock: inStock };
   } catch (e) {
     return null;
   }
 }
-const out = { reply: '', conversation_id: null, blocks: [], token_usage: null };
+const out = { reply: '', conversation_id: null, blocks: [], suggestions: [], token_usage: null };
 try { out.conversation_id = $('Prepare Input').first().json.userId; } catch {}
 let userId = null;
 try { userId = $('Prepare Input').first().json.userId; } catch {}
 const wantsGrid = /\\[BLOCK\\s+product-grid\\]/i.test(replyTxt);
 const wantsCart = /\\[BLOCK\\s+cart-table\\]/i.test(replyTxt);
+const wantsCheckout = /\\[BLOCK\\s+checkout\\]/i.test(replyTxt);
 const wantsOrder = /\\[BLOCK\\s+order-status\\]/i.test(replyTxt);
 // Human-in-the-loop steps the agent asks for: a size choice (variant-picker) and
 // a confirm-before-changing-cart (approval). Both are blocks-only turns — the
@@ -458,6 +488,20 @@ try {
   const cm = replyTxt.match(/META_COMPARISON_JSON:\\s*(\\{.*\\})/i);
   if (cm) { try { comparisonMeta = JSON.parse(cm[1]); } catch (e) {} }
 } catch {}
+// Guided-move chips the orchestrator authors itself, grounded in this turn
+// (dev/prompts.js "SUGGESTED NEXT STEPS") - replaces the widget's old
+// context-blind fallback (any product-grid always got the same canned
+// "Compare / Add the best match / Show cheaper alternatives" regardless of
+// what was actually asked). The widget still falls back to its own guesser
+// when this is absent/empty, so a turn the model skips this on is never silent.
+let suggestions = [];
+try {
+  const sm = replyTxt.match(/META_SUGGESTIONS:\\s*(\\[.*?\\])/i);
+  if (sm) {
+    const parsed = JSON.parse(sm[1]);
+    if (Array.isArray(parsed)) suggestions = parsed.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim().slice(0, 80)).slice(0, 3);
+  }
+} catch {}
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
 // product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
@@ -465,6 +509,7 @@ try {
 // turn also warrants the cart table (its true total is re-read live below).
 let wantsGridObs = false;
 let wantsCartObs = false;
+let wantsCheckoutObs = false;
 let wantsOrderObs = false;
 let cartAddRan = false;
 let orderMeta = null;
@@ -480,6 +525,7 @@ try {
     if (!s) continue;
     if (/\\[BLOCK\\s+product-grid\\]/i.test(s)) wantsGridObs = true;
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
+    if (/\\[BLOCK\\s+checkout\\]/i.test(s)) wantsCheckoutObs = true;
     if (/\\[BLOCK\\s+order-status\\]/i.test(s)) wantsOrderObs = true;
     // The order specialist emits META_ORDER_JSON carrying the already-PII-free order payload.
     if (!orderMeta) orderMeta = orderMetaFrom(o);
@@ -504,6 +550,7 @@ try {
 } catch {}
 const doGrid = wantsGrid || wantsGridObs;
 const doCart = wantsCart || wantsCartObs || cartAddRan;
+const doCheckout = wantsCheckout || wantsCheckoutObs;
 const doOrder = wantsOrder || wantsOrderObs || !!orderMeta;
 const blocks = [];
 if (doOrder && orderMeta) blocks.push({ type: 'order-status', order: orderMeta });
@@ -513,21 +560,29 @@ if (doGrid && !wantsComparison && ids.length) {
     for (const pid of ids) {
       const det = await call(base + '/api/v3/products/' + pid);
       const obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
-      // Never render an out-of-stock item as a product card: the customer reads the grid
-      // as buyable (and "add the ones you suggested" resolves to these ids). The store's
-      // v3 detail carries in_stock — BUT a variant product reports the PARENT as
-      // in_stock=false / current_stock=0 while its sizes hold the real stock (e.g. product
-      // 1 is in_stock=false with a 30ml variant qty=13), so only drop it when no size has
-      // stock either.
-      const varr = Array.isArray(obj?.variant) ? obj.variant : [];
-      const variantInStock = varr.some((v) => Number(v.qty) > 0);
-      const parentOut = !!obj && (obj.in_stock === false || obj.in_stock === 0 || obj.in_stock === '0');
-      if (parentOut && !variantInStock) continue;
       const card = toCard(obj);
-      if (card) cards.push(card);
+      // Never render an item nothing can buy: the customer reads the grid/carousel as
+      // buyable (and "add the ones you suggested" resolves to these ids). toCard() itself
+      // computes in_stock as parent-OR-any-variant (a variant product can report its PARENT
+      // as in_stock=false / current_stock=0 while one of its sizes has real stock, e.g.
+      // product 1 is parent in_stock=false with a 30ml variant qty=13), so this is simply
+      // "is this card buyable at all" - the UI's own Add button also disables on in_stock
+      // (perfecto-ai-demo.html), this is the belt to that suspenders: don't even offer the
+      // card if by some race (stock sold out between product_discovery's search and this
+      // live re-fetch) nothing on it is purchasable any more.
+      if (card && card.in_stock) cards.push(card);
     }
     if (cards.length) {
-      blocks.push({ type: 'product-grid', products: cards });
+      // product-grid vs product-carousel is a true 50/50 coin flip, decided HERE in
+      // code - not by asking the model to "randomly" pick one in its text. An LLM
+      // asked to pick randomly is not actually random (it lands on whatever's most
+      // likely in its training), which is exactly why this always came out as
+      // product-grid before: nothing upstream ever varied it. This is the one place
+      // the rendered block's real type is set, regardless of which specialist or
+      // tool (product_discovery, get_current_offers, the routine path, ...)
+      // triggered the grid, so flipping it here covers all of them uniformly.
+      const layout = Math.random() < 0.5 ? 'product-grid' : 'product-carousel';
+      blocks.push({ type: layout, products: cards });
       const gridTotal = cards.reduce((s, c) => s + c.price, 0);
       replyTxt = guardTotal(replyTxt, gridTotal);
       if (cards.length >= 2) replyTxt = stripRedundantProductLines(replyTxt);
@@ -555,7 +610,7 @@ if (wantsComparison && comparisonMeta && Array.isArray(comparisonMeta.rows) && i
     if (items.length && rows.length) blocks.push({ type: 'comparison', items, rows });
   } catch {}
 }
-if (doCart && userId) {
+if ((doCart || doCheckout) && userId) {
   try {
     const rows = [];
     const read = await call(base + '/api/v3/carts/' + encodeURIComponent(userId), { method: 'POST' });
@@ -572,7 +627,15 @@ if (doCart && userId) {
       // so compute the total from the read-back rows — those carry the authoritative price.
       const total = rows.reduce((s, r) => s + r.price * r.quantity, 0);
       const count = rows.reduce((s, r) => s + r.quantity, 0);
-      blocks.push({ type: 'cart-table', items: rows, total, count });
+      if (doCart) blocks.push({ type: 'cart-table', items: rows, total, count });
+      // checkout: a deliberate, minimal signal - this app's job stops at telling
+      // the caller (SPA/mobile) "the customer wants to check out, here is what's
+      // in the cart"; where/how to actually send them to checkout is the
+      // storefront's own concern, not something this workflow decides or builds
+      // a URL for. Gated on a real non-empty cart (same deterministic backstop
+      // as the out-of-stock card filter elsewhere in this file) regardless of
+      // what the model said - never signal checkout for nothing to buy.
+      if (doCheckout) blocks.push({ type: 'checkout', items: rows, total, count });
       replyTxt = guardTotal(replyTxt, total);
     }
   } catch {}
@@ -605,6 +668,15 @@ if (wantsApproval && approvalMeta && Array.isArray(approvalMeta.items)) {
   }
 }
 out.blocks = blocks;
+// Deterministic backstop for the same reason as stripRedundantProductLines below
+// and the exhausted-iterations salvage elsewhere in this codebase: the prompt
+// asks the model not to emit suggestions on a variant-picker/approval/checkout
+// turn (the customer's immediate next step is already the block itself), but
+// that is a prompt instruction, not a guarantee - never trust it alone. The
+// widget's own chip precedence checks data.suggestions BEFORE it checks for
+// these block types, so an un-caught suggestions array would bury the actual
+// action under more pills.
+out.suggestions = (wantsVariant || wantsApproval || doCheckout) ? [] : suggestions;
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
 // token_usage stays null on this n8n version and that is not fixable in-workflow:

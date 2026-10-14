@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MODEL_NODE } from './model-config.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REST = 'http://localhost:5678/rest';
@@ -41,7 +42,17 @@ const CRED_FILE = resolve(HERE, '..', '.n8n-credentials.json');
 let credConfig = {};
 try { credConfig = JSON.parse(readFileSync(CRED_FILE, 'utf8')); } catch {}
 
-const MODEL_CRED_NAME = process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || 'OpenAI compatible Commandcode';
+// MODEL_NODE (dev/model-config.mjs) is the single source of truth for which
+// provider/credential a build should use, and it already honors MODEL_PROVIDER
+// (env or .n8n-credentials.json). Re-deriving a credential name here instead of
+// reading it from MODEL_NODE was a real bug: this used to hardcode the
+// "commandcode" credential's NAME regardless of MODEL_PROVIDER, so a
+// `MODEL_PROVIDER=gemini node dev/sync.mjs` run still resolved and injected the
+// commandcode credential's id into the Gemini node - n8n then rejects it
+// outright ("Credential ... does not exist for type googlePalmApi"), verified
+// live 2026-10-14. Deferring to MODEL_NODE fixes it for every provider, not
+// just gemini.
+const MODEL_CRED_NAME = process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || Object.values(MODEL_NODE.credentials)[0].name;
 const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
 
 // Deployment order = dependency order. A workflow that is called as a tool must
@@ -49,6 +60,7 @@ const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fas
 const TOOL_WORKFLOWS = [
   { file: 'searchTool.json', name: 'tool-search-products', env: 'SEARCH_TOOL_ID' },
   { file: 'productDetailTool.json', name: 'tool-product-detail', env: 'DETAIL_TOOL_ID' },
+  { file: 'offersTool.json', name: 'tool-current-offers', env: 'OFFERS_TOOL_ID' },
 ];
 const SPECIALISTS = [
   { file: 'productDiscovery.json', name: 'specialist-product-discovery', env: 'PRODUCT_DISCOVERY_ID' },
@@ -170,6 +182,7 @@ function verify(ids) {
   const owners = new Map([
     [ids.SEARCH_TOOL_ID, 'tool-search-products'],
     [ids.DETAIL_TOOL_ID, 'tool-product-detail'],
+    [ids.OFFERS_TOOL_ID, 'tool-current-offers'],
     [ids.PRODUCT_DISCOVERY_ID, 'specialist-product-discovery'],
     [ids.SUPPORT_SPECIALIST_ID, 'specialist-support'],
     [ids.CART_SPECIALIST_ID, 'specialist-cart'],
@@ -210,6 +223,41 @@ function verify(ids) {
   const model = main.nodes.find((n) => n.type && /^@n8n\/n8n-nodes-langchain\.lmChat/.test(n.type));
   if (!model) problems.push('no model node in the built main workflow');
   else if (!Object.values(model.parameters || {}).some((v) => typeof v === 'string' && v.length)) problems.push('model node has no model id');
+
+  // httpRequestTool nodes (cart-add, read-cart, cart-summary, remove-line,
+  // track-order) bake their store origin into the URL AT BUILD TIME from
+  // process.env.STORE_BASE_URL (P.STORE in dev/prompts.js) - they cannot read
+  // $env like the Code-node tools (search/detail/offers/Prepare Input/Response)
+  // do at runtime. A plain `node dev/sync.mjs` run with STORE_BASE_URL unset in
+  // the shell silently bakes the 'http://fastmart-pro.test' fallback into those
+  // five tools while every Code-node tool keeps reading the CONTAINER's real
+  // STORE_BASE_URL - a split-brain where cart-add writes to one store and the
+  // cart-table/product-grid read from another. This happened live 2026-10-14
+  // (verified: cart-add silently pointed at fastmart-pro.test while everything
+  // else used stg-admin.perfectobd.com) and is exactly the failure class this
+  // function exists to catch (see the file header). Compare the baked origin
+  // against the instance's actual STORE_BASE_URL so it fails loudly instead.
+  try {
+    const containerStore = docker('exec', 'fastmart-n8n', 'printenv', 'STORE_BASE_URL').trim();
+    if (containerStore) {
+      const containerOrigin = new URL(containerStore).origin;
+      for (const file of files) {
+        for (const n of readWf(file).nodes) {
+          if (n.type !== 'n8n-nodes-base.httpRequestTool') continue;
+          const url = String(n.parameters && n.parameters.url || '');
+          const m = url.match(/^=?(https?:\/\/[^/{]+)/);
+          if (!m) continue;
+          if (m[1] !== containerOrigin) {
+            problems.push(`${file}: "${n.name}" is baked to ${m[1]} but this instance's STORE_BASE_URL is ${containerOrigin} - rebuild with STORE_BASE_URL=${containerStore} node dev/sync.mjs`);
+          }
+        }
+      }
+    }
+  } catch {
+    // Can't read the container's env (not running, different container name, etc.) -
+    // not fatal to verify, just skip this specific check rather than failing sync
+    // over something unrelated to the workflows themselves.
+  }
 
   if (problems.length) {
     console.error('\nVERIFY FAILED:');
@@ -257,10 +305,11 @@ async function main() {
 
     ids.SEARCH_TOOL_ID = existing.get('tool-search-products');
     ids.DETAIL_TOOL_ID = existing.get('tool-product-detail');
-    if (!ids.SEARCH_TOOL_ID || !ids.DETAIL_TOOL_ID) {
+    ids.OFFERS_TOOL_ID = existing.get('tool-current-offers');
+    if (!ids.SEARCH_TOOL_ID || !ids.DETAIL_TOOL_ID || !ids.OFFERS_TOOL_ID) {
       throw new Error('--check: tool sub-workflows not on this instance — run sync.mjs without --check first');
     }
-    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}`);
+    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}  offersTool=${ids.OFFERS_TOOL_ID}`);
     console.log('\n[2/3] specialists');
     run('build-workflows.mjs', ids);
 
@@ -284,7 +333,8 @@ async function main() {
     const afterTools = workflowIdsByName();
     ids.SEARCH_TOOL_ID = afterTools.get('tool-search-products');
     ids.DETAIL_TOOL_ID = afterTools.get('tool-product-detail');
-    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}`);
+    ids.OFFERS_TOOL_ID = afterTools.get('tool-current-offers');
+    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}  offersTool=${ids.OFFERS_TOOL_ID}`);
     console.log('\n[2/3] specialists');
     run('build-workflows.mjs', ids);
     for (const s of SPECIALISTS) deploy(s.file);

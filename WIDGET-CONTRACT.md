@@ -51,7 +51,21 @@ Content-Type: application/json
 - `token_usage` is **always `null`** — re-verified on n8n `2.40.5` (2026-09-22, the current `latest` image) and it was `null` on `2.37.6` before that, so it is a platform limit rather than a bug we can fix in the workflow: the Agent node's output is only `{output, intermediateSteps}` (this version never emits `tokenUsage`), and n8n's expression data proxy cannot read the `ai_languageModel` sub-node that actually holds the per-call usage — `$('OpenAI Chat Model')`, `$node[...]` and `.all()`/`.first()` all throw `No data found from 'main' input`. The field is kept in the response so a future n8n that does expose it needs no contract change. **For real per-turn cost, read n8n's own Postgres** (`metadata.tracing['llm.tokens.in'|'out']` per execution), which is what `dev/prod-bench.mjs` does — it sums the orchestrator **and** its child specialist executions.
 - `reply` may be empty when `blocks` is non-empty (a blocks-only turn, e.g. cart table).
 - `blocks` types are the widget's existing `OutputBlock` union:
-  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `order-status` | `variant-picker` | `approval`.
+  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `checkout` | `order-status` | `variant-picker` | `approval`.
+
+### `checkout` (customer wants to complete their purchase)
+
+Emitted when the customer says they're ready to checkout/pay/place the order, from a non-empty cart. This app's job stops at the signal — where or how to actually send the customer to checkout (a storefront URL, a native screen, merging the guest cart into a session, anything else) is entirely the caller's decision; this workflow does not build or return a checkout URL.
+
+```jsonc
+{ "type": "checkout", "items": [ { "key": "127985", "product_id": 765, "variation_id": null,
+    "name": "Dot & Key 10% Vitamin C+E Super Bright Face Serum", "variant_name": null, "price": 1050, "quantity": 1 } ],
+  "total": 1050, "count": 1 }
+```
+
+Same `items`/`total`/`count` shape as `cart-table` (re-read live from the store, ground truth), so the caller never has to cross-reference another block. A checkout turn's reply still renders its own `cart-table` block too — the agent only needs to emit `[BLOCK checkout]`; the workflow shows both from a single cart read. `suggestions` is always empty on a checkout turn (same reasoning as `variant-picker`/`approval`: the next step is already the block itself).
+
+**Caveat (verified against the store's own code, not guessed):** the chat's guest cart is written via the store's API with an explicit `user_id` param (`tmp-widget-<uuid>`), but the storefront's own web checkout flow (`CartController`) keys off `session()->get('temp_user_id')` — a value the store mints into the browser's own session, unrelated to the chat's guest id. There is currently no store-side route that adopts a given guest id into that session. A caller that just redirects to the storefront's `/checkout` page as-is will see an empty cart, not the one shown in chat — bridging that (a store-side change, or the caller's own cart-transfer call) is explicitly out of this app's scope per the above, but worth knowing before wiring up a redirect.
 
 ### `order-status` (order tracking)
 

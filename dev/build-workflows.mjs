@@ -177,6 +177,19 @@ const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/
 // steeply-discounted item can rank behind a barely-discounted pricier one).
 const wantsCheapest = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|less\\s+than|under|below)\\b/i.test(kw);
 
+// The price-indicator word above is an instruction to THIS TOOL (trigger the
+// re-sort below) - it is never part of a product's actual name, so leaving it
+// IN the STORE query breaks the literal-match search entirely (verified
+// 2026-10-14: "cheapest facewash" = 0 results on both fastmart-pro.test and
+// stg-admin.perfectobd.com, though "facewash" alone matches fine) - the exact
+// same trap RATING_RE/COLOR_RE below already guard against, just missed for
+// price. A trailing number right after it (e.g. "under 800 taka") is stripped
+// too, for the same reason: a bare number also matches no product name.
+// (global because a real phrasing like "affordable X under 500" matches this
+// pattern TWICE - without /g, .replace() only strips the first occurrence and
+// "under 500" survives in the store query, undoing the fix for that case.)
+const PRICE_RE = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|less\\s+than|under|below)\\b(\\s*(৳|bdt|taka)?\\s*[\\d,]+\\s*(taka|bdt|৳)?)?/gi;
+
 // "Highest/top/best rated" or "most reviewed" (no specific product named) has
 // nothing to search BY keyword — the catalogue's rating data is barely
 // populated (verified 2026-10-14: a 1000-product sample out of 2687 total has
@@ -195,7 +208,8 @@ const wantsCheapest = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|l
 const RATING_RE = /\\b(highest|top|best|most)[\\s-]+(rated|rating|review(?:ed|s)?)\\b(\\s+(products?|items?|ones?))?/i;
 const wantsRating = RATING_RE.test(kw);
 const ratingResidual = wantsRating ? kw.replace(RATING_RE, ' ').replace(/\\s{2,}/g, ' ').trim() : '';
-const workingKw = wantsRating ? ratingResidual : kw;
+let workingKw = wantsRating ? ratingResidual : kw;
+if (wantsCheapest) workingKw = workingKw.replace(PRICE_RE, ' ').replace(/\\s{2,}/g, ' ').trim() || workingKw;
 
 // Color/shade asks ("maroon lipstick") are a dead end on both sides: the store's
 // keyword search is a literal text match against the product NAME only, so a
@@ -446,6 +460,141 @@ function productDetailToolWorkflow() {
   );
   connections['Sub Trigger'] = { main: [[{ node: 'Detail', type: 'main', index: 0 }]] };
   return { name: 'tool-product-detail', nodes, connections, settings: { executionOrder: 'v1' } };
+}
+
+// ---------------------------------------------------------------------------
+// Slim current-offers tool (its own sub-workflow), wired directly onto the
+// MAIN orchestrator (see build-main.mjs) rather than through product_discovery:
+// "show me current offers" needs no multi-step product reasoning, just a
+// straight read, so it skips a whole sub-agent round-trip the same way
+// cart-add does. Composes three store endpoints the catalog already exposes
+// (confirmed against fastmart-pro source, no store-side change needed):
+//   - GET /api/v3/flash-deals            — active time-boxed campaigns
+//   - GET /api/v4/combo-offers           — bundled multi-product deals
+//   - GET /api/v3/products/discounted    — individual products on discount
+// All three are unauthenticated storefront endpoints, same convention as
+// SEARCH_CODE/DETAIL_CODE above.
+// ---------------------------------------------------------------------------
+const OFFERS_CODE = `
+const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+
+// Same ok/status-aware fetch as search/detail - a failed call must never read
+// as "no offers right now" (see AGENTS.md §2/§5 on silent n8n failures).
+function httpText(url) {
+  return new Promise((resolve) => {
+    let u = null;
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve({ ok: false, status: 0, body: null }); }
+    const mod = require(u.protocol === 'https:' ? 'https' : 'http');
+    const req = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: 'GET' }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; if (data.length > 2000000) { req.destroy(); resolve({ ok: false, status: res.statusCode, body: null }); } });
+      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: data }));
+      res.on('error', () => resolve({ ok: false, status: res.statusCode, body: null }));
+    });
+    req.on('error', () => resolve({ ok: false, status: 0, body: null }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ ok: false, status: 0, body: null }); });
+    req.end();
+  });
+}
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{'); const k = s.indexOf('[');
+  const start = i < 0 ? k : (k < 0 ? i : Math.min(i, k));
+  if (start < 0) return null;
+  try { return JSON.parse(s.slice(start)); } catch (e) { return null; }
+}
+function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : 0; }
+function taka(n) { return '৳' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
+// flash-deals' "date" and combo-offers' "end_date" are both unix SECONDS
+// (confirmed against the store's FlashDealCollection resource and GiftOffer::scopeValid,
+// both compared against PHP time()) - multiply by 1000 for a JS Date.
+function daysLeft(unixSeconds) {
+  const ms = Number(unixSeconds) * 1000 - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.ceil(ms / 86400000);
+}
+
+const [flashRes, comboRes, discRes] = await Promise.all([
+  httpText(base + '/api/v3/flash-deals'),
+  httpText(base + '/api/v4/combo-offers?per_page=5'),
+  httpText(base + '/api/v3/products/discounted?limit=12'),
+]);
+const flashParsed = firstJson(flashRes.ok ? flashRes.body : null);
+const comboParsed = firstJson(comboRes.ok ? comboRes.body : null);
+const discParsed = firstJson(discRes.ok ? discRes.body : null);
+
+// All three calls failing is a real outage, not "there happen to be no offers" -
+// the same trap the search tool guards against.
+if (!flashParsed && !comboParsed && !discParsed) {
+  return [{ json: { text: 'OFFERS UNAVAILABLE - the store did not return any promotion data just now. Do NOT say there are no current offers - you have no result either way. Tell the customer offers info is temporarily unavailable and to check back shortly.\\nMETA_PRODUCT_IDS: none' } }];
+}
+
+const flashDeals = flashParsed && Array.isArray(flashParsed.data) ? flashParsed.data : [];
+const combos = comboParsed && Array.isArray(comboParsed.data) ? comboParsed.data : [];
+const discRaw = discParsed && Array.isArray(discParsed.data) ? discParsed.data : [];
+
+const lines = [];
+for (const d of flashDeals.slice(0, 3)) {
+  const left = daysLeft(d && d.date);
+  const title = String((d && (d.title || d.subtitle)) || 'Flash Sale').trim();
+  lines.push('FLASH SALE: ' + title + (left ? ' - ends in ' + left + ' day' + (left === 1 ? '' : 's') : ''));
+}
+for (const c of combos.slice(0, 3)) {
+  const left = daysLeft(c && c.end_date);
+  const name = String((c && (c.combo_name || c.offer_title)) || 'Combo Offer').trim();
+  const cnt = Number(c && c.products_count) || 0;
+  lines.push('COMBO OFFER: ' + name + ' - ' + taka(c && c.combo_price) + (cnt ? ' for ' + cnt + ' items' : '') + (left ? ', ends in ' + left + ' day' + (left === 1 ? '' : 's') : ''));
+}
+
+// Biggest real savings first - that is what "current offers" means to a customer,
+// not whatever random order the store API happened to return.
+const discounted = discRaw.map((p) => {
+  const price = num(p.nonformated_price) || num(p.main_price) || num(p.web_price);
+  const was = num(p.stroked_price);
+  const pct = (was > price && was > 0) ? Math.round((1 - price / was) * 100) : 0;
+  return { p, price, was, pct };
+}).filter((x) => x.pct > 0).sort((a, b) => b.pct - a.pct).slice(0, 6);
+
+const ids = [];
+for (const { p, price, was, pct } of discounted) {
+  const stock = p.in_stock ? ('IN STOCK (' + (Number(p.current_stock) || 0) + ' left)') : 'OUT OF STOCK';
+  const size = p.custom_size ? ' ' + String(p.custom_size) : '';
+  lines.push('- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + taka(price) + ' (was ' + taka(was) + ', -' + pct + '%) | ' + stock);
+  if (p.in_stock) ids.push(p.id);
+}
+
+if (!lines.length) {
+  return [{ json: { text: 'No active flash sales, combo offers or discounted products right now - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
+}
+
+const text = "Here's what's on offer right now:\\n" + lines.join('\\n') +
+  (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.slice(0, 6).join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
+return [{ json: { text } }];
+`;
+
+function offersToolWorkflow() {
+  const nodes = [];
+  const connections = {};
+  nodes.push(
+    node({
+      parameters: { events: 'worklfow_call', inputSource: 'passthrough' },
+      name: 'Sub Trigger',
+      type: 'n8n-nodes-base.executeWorkflowTrigger',
+      typeVersion: 1.2,
+      position: pos(0, 0),
+    }),
+  );
+  nodes.push(
+    node({
+      parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: OFFERS_CODE },
+      name: 'Offers',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: pos(240, 0),
+    }),
+  );
+  connections['Sub Trigger'] = { main: [[{ node: 'Offers', type: 'main', index: 0 }]] };
+  return { name: 'tool-current-offers', nodes, connections, settings: { executionOrder: 'v1' } };
 }
 
 // ---------------------------------------------------------------------------
@@ -751,8 +900,9 @@ for (const [k, v] of Object.entries(specMap)) {
 }
 fs.writeFileSync(`${OUT}/searchTool.json`, JSON.stringify(searchToolWorkflow(), null, 2));
 fs.writeFileSync(`${OUT}/productDetailTool.json`, JSON.stringify(productDetailToolWorkflow(), null, 2));
+fs.writeFileSync(`${OUT}/offersTool.json`, JSON.stringify(offersToolWorkflow(), null, 2));
 
-console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool + productDetailTool');
+console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool + productDetailTool + offersTool');
 console.log('search tool workflow id:', SEARCH_TOOL_ID);
 console.log('product-detail tool workflow id:', DETAIL_TOOL_ID);
 console.log('model:', MODEL_NODE.provider, '->', MODEL_NODE.model);

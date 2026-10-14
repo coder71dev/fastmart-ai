@@ -6,7 +6,7 @@
 // thing being graded, and can run against local or VPS later.
 //
 // Usage:
-//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language]
+//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language|offers]
 //   node dev/eval-harness.mjs --out report.json
 //
 // Exit code 0 = no HARD failures; 1 = at least one HARD failure.
@@ -78,6 +78,7 @@ async function storeCart(userId) {
 // correct answer purely because the model chose the other valid layout.
 const cardsOf = (d) => d.blocks?.find((b) => b.type === 'product-grid' || b.type === 'product-carousel')?.products ?? [];
 const cartOf = (d) => d.blocks?.find((b) => b.type === 'cart-table');
+const checkoutOf = (d) => d.blocks?.find((b) => b.type === 'checkout');
 
 function check(name, hard, fn) {
   return async () => {
@@ -160,8 +161,16 @@ battery.push(['user_id is required \u2014 a request with neither field 400s, not
 let cartTotal = 0;
 let cartLineName = '';
 
+// Product choice matters here: "iUNIK Tea Tree Relief Serum" used to be this
+// case's product, but the catalog carries TWO products with that exact name
+// (one in-stock, one not) and repeated eval runs against the shared staging
+// store eventually depleted the in-stock one's real inventory to 0 (verified
+// 2026-10-14 directly against the store) — a false "FAIL" with nothing wrong
+// in the workflow, not a flake to chase. Swapped to a uniquely-named,
+// no-variant product so this case tests the add/persist/remove flow itself,
+// not catalog stock levels.
 battery.push(['cart add reports a real persisted line', 'cart', true, async () => {
-  const d0 = await postChat({ message: 'add the iUNIK Tea Tree Relief Serum to my cart', conversation_id: CART_ID });
+  const d0 = await postChat({ message: 'add Dot & Key 10% Vitamin C+E Super Bright Face Serum to my cart', conversation_id: CART_ID });
   if (d0.status !== 200 || !d0.json) return { ok: false, detail: 'http/chat failed' };
   const ct = cartOf(d0.json);
   if (!ct || !(ct.total > 0) || !ct.items?.length) return { ok: false, detail: `no cart-table (total ${ct?.total})` };
@@ -197,6 +206,34 @@ battery.push(['cart remove empties it', 'cart', true, async () => {
   const stillShowsSerum = !!ct && ct.total > 0 && (ct.items ?? []).some((i) => /iUNIK|serum/i.test(i.name ?? ''));
   const saysEmpty = /(empty|nothing|no item|none|৳\s*0)/i.test(reply);
   return { ok: !stillShowsSerum && saysEmpty, detail: reply.slice(0, 120) };
+}]);
+
+// ---- checkout (block-signal only — this app never builds a checkout URL/redirect) ---
+// Uses a different product than the cart group's (the iUNIK one is known-flaky on
+// the shared staging catalog, see AGENTS.md §5) so this doesn't inherit that flake.
+const CHECKOUT_ID = `tmp-evalco-${RUN}`;
+battery.push(['checkout intent with items emits the checkout block', 'cart', true, async () => {
+  // A known no-variant, reliably-searchable product (same pattern as the HITL
+  // battery picking product 100 deliberately) - "cheapest facewash" would risk
+  // landing on a size-option product and pausing on a variant-picker instead of
+  // actually adding, leaving nothing to check out.
+  const add = await postChat({ message: 'add Dot & Key 10% Vitamin C+E Super Bright Face Serum to my cart', conversation_id: CHECKOUT_ID });
+  if (add.status !== 200 || !add.json) return { ok: false, detail: 'add turn failed' };
+  const { status, json } = await postChat({ message: "I'm ready to checkout", conversation_id: CHECKOUT_ID });
+  if (status !== 200 || !json) return { ok: false, detail: `http ${status}` };
+  const co = checkoutOf(json);
+  if (!co) return { ok: false, detail: `no checkout block: ${JSON.stringify((json.blocks || []).map((b) => b.type))}` };
+  const ok = co.total > 0 && Array.isArray(co.items) && co.items.length > 0 && (json.suggestions ?? []).length === 0;
+  return { ok, detail: `total=${co.total} items=${co.items?.length} suggestions=${JSON.stringify(json.suggestions)}` };
+}]);
+
+battery.push(['checkout intent with an empty cart does not emit the block', 'cart', true, async () => {
+  const { status, json } = await postChat({ message: 'I want to checkout', conversation_id: `tmp-evalco-empty-${RUN}` });
+  if (status !== 200 || !json) return { ok: false, detail: `http ${status}` };
+  const co = checkoutOf(json);
+  const reply = json.reply ?? '';
+  const saysEmpty = /(empty|nothing|no item|haven'?t added)/i.test(reply);
+  return { ok: !co && saysEmpty, detail: reply.slice(0, 120) };
 }]);
 
 // ---- human-in-the-loop (variant-picker / approval) -------------------------
@@ -290,6 +327,22 @@ battery.push(['multi-product reply does not re-list names/prices already on the 
     return boldSpans.length === 1 && !/\b(shade|step|morning|night|variant)\b/i.test(rest);
   });
   return { ok: redundantLines.length === 0, detail: redundantLines.length ? JSON.stringify(redundantLines) : `clean prose, ${cards.length} cards carry the details` };
+}]);
+
+// ---- offers -----------------------------------------------------------------
+// "show me current offers" used to have no answer at all (no tool covered it) -
+// the agent either refused as off-topic or invented a sale. This asserts a real,
+// on-topic answer came back; whether the store currently HAS an active flash
+// sale/combo is data, not something this test controls, so it accepts either a
+// real offer summary or an honest "nothing on right now" - never a refusal or a
+// fabricated discount.
+battery.push(['asks for current offers gets a real answer, not a refusal', 'offers', true, async () => {
+  const { status, json } = await postChat({ message: 'What offers do you have right now?' });
+  if (status !== 200 || !json) return { ok: false, detail: `http ${status}` };
+  const r = json.reply ?? '';
+  const refused = /shopping assistant here|outside what I can help|can'?t help with that/i.test(r);
+  const looksLikeAnswer = /offer|deal|discount|sale|promo|combo/i.test(r) || cardsOf(json).length > 0;
+  return { ok: !refused && looksLikeAnswer && r.length > 5, detail: r.slice(0, 150) };
 }]);
 
 // ---- support --------------------------------------------------------------
