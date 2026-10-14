@@ -177,6 +177,26 @@ const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/
 // steeply-discounted item can rank behind a barely-discounted pricier one).
 const wantsCheapest = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|less\\s+than|under|below)\\b/i.test(kw);
 
+// "Highest/top/best rated" or "most reviewed" (no specific product named) has
+// nothing to search BY keyword — the catalogue's rating data is barely
+// populated (verified 2026-10-14: a 1000-product sample out of 2687 total has
+// only ~30 items with any rating at all, every one a 5.0 with 1-2 reviews) and
+// none of those happen to match the "popular" fallback keyword this tool used
+// before, so a customer asking for the highest-rated product got back
+// whatever "popular" matched — all rating:0 — never the real 5-star items.
+// The store's own sort= param is also a no-op here (verified: rating_high_low,
+// top_rated, best_rating, highest_rating all return the identical order as no
+// sort param at all) so there is no server-side rating sort to lean on either.
+// Fix: strip the rating phrase out, then — IF a real product/category keyword
+// is left (e.g. "serum" in "top rated serum") — keep searching scoped to it,
+// just with a wider pool to rank within. Only go fully catalogue-wide (no
+// keyword) when the ask has nothing left to scope by (e.g. just "highest
+// rated products"). Same "fetch wide, re-sort for real" pattern as cheapest.
+const RATING_RE = /\\b(highest|top|best|most)[\\s-]+(rated|rating|review(?:ed|s)?)\\b(\\s+(products?|items?|ones?))?/i;
+const wantsRating = RATING_RE.test(kw);
+const ratingResidual = wantsRating ? kw.replace(RATING_RE, ' ').replace(/\\s{2,}/g, ' ').trim() : '';
+const workingKw = wantsRating ? ratingResidual : kw;
+
 // Color/shade asks ("maroon lipstick") are a dead end on both sides: the store's
 // keyword search is a literal text match against the product NAME only, so a
 // color word that appears nowhere in any product's name returns ZERO results
@@ -188,8 +208,8 @@ const wantsCheapest = /\\b(cheap(est)?|lowest|budget|afford(able)?|inexpensive|l
 // already carries choice_options (shade names) on every item; this tool just
 // has to stop throwing that away and stop sending the color word to the store.
 const COLOR_RE = /\\b(red|pink|hot\\s*pink|maroon|wine|burgundy|oxblood|nude|beige|brown|chocolate|black|white|blue|navy|green|yellow|orange|purple|violet|lilac|gold(en)?|silver|coral|peach|mauve|berry|rose|plum|rust|bronze|copper|gr[ae]y|lavender|mint|teal|turquoise|cream|ivory|tan|olive|magenta|fuchsia|crimson|scarlet|charcoal)\\b/i;
-const wantsColor = COLOR_RE.test(kw);
-const storeKw = wantsColor ? (kw.replace(COLOR_RE, ' ').replace(/\\s{2,}/g, ' ').trim() || kw) : kw;
+const wantsColor = COLOR_RE.test(workingKw);
+const storeKw = wantsColor ? (workingKw.replace(COLOR_RE, ' ').replace(/\\s{2,}/g, ' ').trim() || workingKw) : workingKw;
 
 // Returns { ok, status, body } — the STATUS matters. The old version resolved
 // null on any trouble and threw the status away, so a 500 from the store (its
@@ -222,13 +242,27 @@ function firstJson(s) {
 function num(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return Number.isFinite(n) ? n : 0; }
 function taka(n) { return '\u09f3' + Math.round(Number(n) || 0).toLocaleString('en-US'); }
 
-const fetchLimit = wantsCheapest ? 30 : 6;
-const res = await httpText(base + '/api/v4/products?keyword=' + encodeURIComponent(storeKw) + '&limit=' + fetchLimit);
+const ratingScoped = wantsRating && !!storeKw;
+const fetchLimit = wantsRating ? (ratingScoped ? 50 : 300) : (wantsCheapest ? 30 : 6);
+const kwParam = (wantsRating && !ratingScoped) ? '' : ('keyword=' + encodeURIComponent(storeKw) + '&');
+const res = await httpText(base + '/api/v4/products?' + kwParam + 'limit=' + fetchLimit);
 const parsed = firstJson(res.ok ? res.body : null);
 let arr = parsed && Array.isArray(parsed.data) ? parsed.data : [];
 if (wantsCheapest && arr.length) {
   const priceOf = (p) => num(p.nonformated_price) || num(p.main_price) || num(p.web_price);
   arr = arr.slice().sort((a, b) => priceOf(a) - priceOf(b)).slice(0, 6);
+}
+let noRatingData = false;
+if (wantsRating) {
+  const rated = arr.filter((p) => num(p.rating) > 0);
+  if (rated.length) {
+    arr = rated.sort((a, b) => num(b.rating) - num(a.rating) || num(b.total_reviews) - num(a.total_reviews) || num(b.num_of_sale) - num(a.num_of_sale)).slice(0, 6);
+  } else {
+    // Even the wide pool had nothing rated — be honest about it instead of
+    // silently handing back unrelated rating:0 products as "highest rated".
+    noRatingData = true;
+    arr = [];
+  }
 }
 
 // A search that never ran is NOT a search that found nothing. Say so in a form
@@ -240,6 +274,9 @@ if (!parsed) {
 }
 
 if (!arr.length) {
+  if (noRatingData) {
+    return [{ json: { text: 'NO RATING DATA - scanned a wide sample of the catalogue and found no product with a real customer rating yet. Do NOT invent or imply a "highest rated" product. Tell the customer the store does not have enough reviews yet to rank by rating, and offer to recommend by popularity/best-sellers instead.\\nMETA_PRODUCT_IDS: none' } }];
+  }
   return [{ json: { text: 'No products matched "' + kw + '". Try a broader or different keyword.' } }];
 }
 
@@ -256,7 +293,13 @@ const lines = arr.map((p) => {
   const opts = shadeNames && shadeNames.length
     ? ' | SHADES: ' + shadeNames.join(', ')
     : (hasOpts ? ' | SIZE OPTIONS (choose one)' : ' | no size options');
-  return '- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + taka(price) + disc + ' | ' + stock + opts;
+  // Rating is advertised in this tool's own description but was never actually
+  // in the line (verified 2026-10-14) — most products have none, so only show
+  // it when the store actually has a real rating for this product.
+  const rating = num(p.rating);
+  const reviews = num(p.total_reviews);
+  const ratingTxt = rating > 0 ? (' | ' + rating.toFixed(1) + '★ (' + reviews + ' review' + (reviews === 1 ? '' : 's') + ')') : '';
+  return '- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + taka(price) + disc + ' | ' + stock + opts + ratingTxt;
 });
 
 const text = 'Search "' + kw + '" - ' + arr.length + ' result(s), prices in BDT (\u09f3):\\n' + lines.join('\\n') +
