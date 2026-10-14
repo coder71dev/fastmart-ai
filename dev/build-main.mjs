@@ -283,6 +283,7 @@ function stripFooter(s) {
     .replace(/META_ORDER_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
     .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
     .trim();
 }
 function normalizeCurrency(s) {
@@ -427,6 +428,7 @@ const wantsOrder = /\\[BLOCK\\s+order-status\\]/i.test(replyTxt);
 // customer's tap comes back on the NEXT request as a structured action.
 const wantsVariant = /\\[BLOCK\\s+variant-picker\\]/i.test(replyTxt);
 const wantsApproval = /\\[BLOCK\\s+approval\\]/i.test(replyTxt);
+const wantsComparison = /\\[BLOCK\\s+comparison\\]/i.test(replyTxt);
 let ids = [];
 try {
   const m = replyTxt.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
@@ -448,6 +450,13 @@ let approvalMeta = null;
 try {
   const am = replyTxt.match(/META_APPROVAL_JSON:\\s*(\\{.*\\})/i);
   if (am) { try { approvalMeta = JSON.parse(am[1]); } catch (e) {} }
+} catch {}
+// The comparison payload is the agent's own row copy (price/best-for/etc are
+// authored text, not re-fetched); only the item cards below are ground truth.
+let comparisonMeta = null;
+try {
+  const cm = replyTxt.match(/META_COMPARISON_JSON:\\s*(\\{.*\\})/i);
+  if (cm) { try { comparisonMeta = JSON.parse(cm[1]); } catch (e) {} }
 } catch {}
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
@@ -498,7 +507,7 @@ const doCart = wantsCart || wantsCartObs || cartAddRan;
 const doOrder = wantsOrder || wantsOrderObs || !!orderMeta;
 const blocks = [];
 if (doOrder && orderMeta) blocks.push({ type: 'order-status', order: orderMeta });
-if (doGrid && ids.length) {
+if (doGrid && !wantsComparison && ids.length) {
   try {
     const cards = [];
     for (const pid of ids) {
@@ -523,6 +532,27 @@ if (doGrid && ids.length) {
       replyTxt = guardTotal(replyTxt, gridTotal);
       if (cards.length >= 2) replyTxt = stripRedundantProductLines(replyTxt);
     }
+  } catch {}
+}
+// COMPARISON — items re-fetched live (ground truth) in the SAME order as
+// META_PRODUCT_IDS; rows are the agent's own copy (price/best-for/etc are
+// authored text, not fetched). Items keep their original order with NO
+// stock filtering (unlike the grid above) because dropping one would shift
+// every row's values out of alignment with its column.
+if (wantsComparison && comparisonMeta && Array.isArray(comparisonMeta.rows) && ids.length) {
+  try {
+    const items = [];
+    for (const pid of ids) {
+      const det = await call(base + '/api/v3/products/' + pid);
+      const obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
+      const card = toCard(obj);
+      if (card) items.push(card);
+    }
+    const rows = comparisonMeta.rows
+      .map((r) => ({ label: String(r && r.label || '').trim(), values: Array.isArray(r && r.values) ? r.values.map((v) => String(v ?? '')) : [] }))
+      .filter((r) => r.label)
+      .slice(0, 8);
+    if (items.length && rows.length) blocks.push({ type: 'comparison', items, rows });
   } catch {}
 }
 if (doCart && userId) {
