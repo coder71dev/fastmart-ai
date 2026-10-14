@@ -1,11 +1,19 @@
 // Single source of truth for WHICH model the built workflows talk to.
 //
-// Switching provider is an env change, not a code edit:
+// Switching provider for ONE run is an env change, not a code edit:
 //
 //   node dev/build-main.mjs                                  # Command Code (default)
 //   MODEL_PROVIDER=gemini node dev/build-main.mjs             # back to Gemini
 //   MODEL_PROVIDER=openrouter MODEL_CRED_ID=xxx \
 //     MODEL_CRED_NAME=OpenRouter node dev/build-main.mjs      # any openAiApi credential
+//
+// To make a provider STICK for this instance (so a plain `node dev/sync.mjs`
+// never silently reverts it back to the commandcode default — this bit
+// production once: a sync run without MODEL_PROVIDER=gemini redeployed the
+// OpenAI-wire model over a Gemini-only instance), set it in
+// .n8n-credentials.json instead of relying on everyone remembering the env
+// var every time: { "MODEL_PROVIDER": "gemini" }. An explicit env var still
+// overrides this file for a one-off run.
 //
 // MODEL overrides just the model id inside the chosen provider (e.g.
 // MODEL=google/gemini-3.7-flash keeps Command Code but changes the model).
@@ -53,7 +61,7 @@ const PROVIDERS = {
 };
 
 function resolve() {
-  const key = (process.env.MODEL_PROVIDER || 'commandcode').toLowerCase();
+  const key = (process.env.MODEL_PROVIDER || credConfig.MODEL_PROVIDER || 'commandcode').toLowerCase();
   const p = PROVIDERS[key];
   if (!p) {
     throw new Error(`unknown MODEL_PROVIDER "${key}" — known: ${Object.keys(PROVIDERS).join(', ')}`);

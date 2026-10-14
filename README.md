@@ -312,7 +312,7 @@ node dev/eval-harness.mjs
 
 > **Store host** is baked into the tool nodes at build time. For a VPS build: `STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs`
 
-> **Model** is baked at build time, but the provider is an env choice: `MODEL_PROVIDER=gemini node dev/sync.mjs` switches to Gemini. See `dev/model-config.mjs`.
+> **Model** is baked at build time. The provider can be a one-off env choice (`MODEL_PROVIDER=gemini node dev/sync.mjs`), but on any instance that should ALWAYS use a non-default provider, set it once in `.n8n-credentials.json` instead (`{ "MODEL_PROVIDER": "gemini" }`) — otherwise a plain `node dev/sync.mjs` silently redeploys the `commandcode` default over it. See `dev/model-config.mjs`.
 
 `sync.mjs` exists because the builders cannot know your instance's ids. It deploys each workflow, reads the id n8n assigned it, and passes that into the next build — so tool ids, specialist ids and credential ids are always this instance's, and it verifies every reference before it says "done". Deploying a hand-built JSON without it is what produces a 500 in the widget (`Error in workflow`) and `Error in sub-node PG Memory`.
 
