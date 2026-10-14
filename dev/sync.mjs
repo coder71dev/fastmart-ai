@@ -54,6 +54,7 @@ try { credConfig = JSON.parse(readFileSync(CRED_FILE, 'utf8')); } catch {}
 // just gemini.
 const MODEL_CRED_NAME = process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || Object.values(MODEL_NODE.credentials)[0].name;
 const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
+const WEBHOOK_JWT_CRED_NAME = process.env.WEBHOOK_JWT_CRED_NAME || credConfig.WEBHOOK_JWT_CRED_NAME || 'fastmart Webhook JWT';
 
 // Deployment order = dependency order. A workflow that is called as a tool must
 // EXIST before the caller is built, because the caller needs its id.
@@ -116,7 +117,7 @@ function resolveCred(envId, name, map) {
   if (envId) return { id: envId, name };
   const id = map.get(name);
   if (!id) {
-    const fix = name.includes('Postgres') ? 'PG_CRED_NAME' : 'MODEL_CRED_NAME';
+    const fix = name.includes('Postgres') ? 'PG_CRED_NAME' : name.includes('Webhook') ? 'WEBHOOK_JWT_CRED_NAME (run node dev/create-webhook-jwt-cred.mjs first)' : 'MODEL_CRED_NAME';
     throw new Error(
       `no credential named "${name}" on this instance.\n` +
       `  available: ${[...map.keys()].join(', ') || '(none)'}\n` +
@@ -287,13 +288,16 @@ async function main() {
   // No guessing — the user sets the names once and the whole pipeline uses them.
   const modelCred = resolveCred(process.env.MODEL_CRED_ID, MODEL_CRED_NAME, creds);
   const pgCred = resolveCred(process.env.PG_CRED_ID, PG_CRED_NAME, creds);
+  const webhookJwtCred = resolveCred(process.env.WEBHOOK_JWT_CRED_ID, WEBHOOK_JWT_CRED_NAME, creds);
   const ids = {
     MODEL_CRED_ID: modelCred.id,
     MODEL_CRED_NAME: modelCred.name,
     PG_CRED_ID: pgCred.id,
     PG_CRED_NAME: pgCred.name,
+    WEBHOOK_JWT_CRED_ID: webhookJwtCred.id,
+    WEBHOOK_JWT_CRED_NAME: webhookJwtCred.name,
   };
-  console.log(`credentials: model=${ids.MODEL_CRED_NAME} (${ids.MODEL_CRED_ID})  pg=${ids.PG_CRED_NAME} (${ids.PG_CRED_ID})`);
+  console.log(`credentials: model=${ids.MODEL_CRED_NAME} (${ids.MODEL_CRED_ID})  pg=${ids.PG_CRED_NAME} (${ids.PG_CRED_ID})  webhook-jwt=${ids.WEBHOOK_JWT_CRED_NAME} (${ids.WEBHOOK_JWT_CRED_ID})`);
 
   if (CHECK_ONLY) {
     // Build everything using the ids already on this instance, then verify

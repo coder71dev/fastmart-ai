@@ -21,6 +21,11 @@ const ARGS = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => (a.star
 const WEBHOOK = ARGS.webhook ?? 'http://localhost:5678/webhook/spike/agent-chat';
 const STORE = String(ARGS.store ?? 'http://fastmart-pro.test').replace(/\/+$/, '');
 const GROUP = ARGS.group ?? 'all';
+// The webhook requires JWT Auth as of 2026-10-14 (static shared-secret bearer
+// token — see WIDGET-CONTRACT.md). --token overrides env, env overrides the
+// dev instance's own default so a bare `node dev/eval-harness.mjs` still works
+// against this instance without extra setup.
+const AUTH_TOKEN = ARGS.token ?? process.env.N8N_WEBHOOK_AUTH_TOKEN ?? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwZXJmZWN0by13aWRnZXQiLCJpYXQiOjE3OTE5ODA3NDIsImV4cCI6MjEwNzM0MDc0Mn0.UjEBut1tocYYicFMF-D-nJ5CQuKxGFSRRZTuJRmF4o4';
 const REPORT = ARGS.out ? String(ARGS.out) : null;
 const TIMEOUT_MS = 120000;
 const RUN = 'e' + Date.now().toString(36); // unique per run -> no cross-run chat-memory bleed
@@ -50,7 +55,7 @@ async function postChat(body) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full), signal: ctrl.signal });
+    const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}` }, body: JSON.stringify(full), signal: ctrl.signal });
     const txt = stripExtraneous(await r.text());
     const json = txt ? JSON.parse(txt) : null;
     return { status: r.status, json, ms: now() - t0 };
@@ -141,7 +146,7 @@ battery.push(['user_id is required \u2014 a request with neither field 400s, not
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   let r;
   try {
-    r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'hello' }), signal: ctrl.signal });
+    r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}` }, body: JSON.stringify({ message: 'hello' }), signal: ctrl.signal });
   } finally { clearTimeout(timer); }
   const txt = stripExtraneous(await r.text());
   let json = null; try { json = txt ? JSON.parse(txt) : null; } catch {}

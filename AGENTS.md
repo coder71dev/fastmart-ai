@@ -146,10 +146,12 @@ exactly how both incidents in §2 happened.
   the tool call's actual `observation` string. An empty observation with a
   confident reply is the signature of exactly the silent-failure pattern in
   §2.
-- Manual test request (every call needs `user_id`, see §6):
+- Manual test request (every call needs `user_id` and, as of 2026-10-14, an
+  `Authorization: Bearer` token — see §6):
   ```bash
   curl -s -X POST http://localhost:5678/webhook/spike/agent-chat \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer <token — see dev/create-webhook-jwt-cred.mjs>" \
     -d '{"message": "find me a serum", "user_id": "tmp-test-123"}'
   ```
 
@@ -158,6 +160,13 @@ exactly how both incidents in §2 happened.
 ## 6. The webhook contract — key facts (full spec in WIDGET-CONTRACT.md)
 
 - `POST {N8N_BASE_URL}/webhook/spike/agent-chat`
+- **`Authorization: Bearer <token>` is REQUIRED** (as of 2026-10-14) — JWT
+  Auth on the Webhook node, a static shared secret (`N8N_WEBHOOK_JWT_SECRET` /
+  credential `fastmart Webhook JWT`), not per-user login. Missing → `401`;
+  wrong signature → `403`. Every caller (widget, eval-harness) embeds the same
+  long-lived token, same as an API key — see WIDGET-CONTRACT.md for why this
+  is a casual-abuse deterrent, not real secrecy (the token has to live in the
+  client-side JS for the browser to send it).
 - **`user_id` is REQUIRED** (as of 2026-10-12). Without it the workflow
   returns `{"error": "user_id is required", "status": 400}`. It is *not*
   auto-minted from `conversation_id` anymore — the caller must mint and

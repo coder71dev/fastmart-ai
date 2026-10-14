@@ -13,6 +13,11 @@
 // The OpenAI credential reads its API key from N8N_INSTANCE_AI_MODEL_API_KEY
 // in your .env (via the n8n container). If that's empty, set it:
 //   N8N_INSTANCE_AI_MODEL_API_KEY=<your-key> node dev/bootstrap-creds.mjs
+//
+// A fresh instance also needs the webhook's JWT Auth credential (gates the
+// public agent-chat endpoint — see WIDGET-CONTRACT.md). That one isn't
+// created here; run it separately once N8N_WEBHOOK_JWT_SECRET is in .env:
+//   node dev/create-webhook-jwt-cred.mjs
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

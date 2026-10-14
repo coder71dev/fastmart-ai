@@ -17,7 +17,7 @@ cp .env.example .env
 **PowerShell (Windows):**
 
 ```powershell
-$keys = @('N8N_ENCRYPTION_KEY','N8N_USER_MANAGEMENT_JWT_SECRET','SANDBOX_API_KEYS','SANDBOX_API_RUNNER_REGISTRATION_TOKEN','SANDBOX_API_RUNNER_API_KEY','SEARXNG_SECRET','POSTGRES_PASSWORD')
+$keys = @('N8N_ENCRYPTION_KEY','N8N_USER_MANAGEMENT_JWT_SECRET','N8N_WEBHOOK_JWT_SECRET','SANDBOX_API_KEYS','SANDBOX_API_RUNNER_REGISTRATION_TOKEN','SANDBOX_API_RUNNER_API_KEY','SEARXNG_SECRET','POSTGRES_PASSWORD')
 $env = Get-Content .env -Raw
 foreach ($k in $keys) { $env = $env -replace "(?m)^$k=.*", "$k=$(openssl rand -hex 32)" }
 Set-Content .env $env -NoNewline
@@ -26,9 +26,9 @@ Set-Content .env $env -NoNewline
 **Bash (Linux/macOS):**
 
 ```bash
-for v in N8N_ENCRYPTION_KEY N8N_USER_MANAGEMENT_JWT_SECRET SANDBOX_API_KEYS \
-         SANDBOX_API_RUNNER_REGISTRATION_TOKEN SANDBOX_API_RUNNER_API_KEY \
-         SEARXNG_SECRET POSTGRES_PASSWORD; do
+for v in N8N_ENCRYPTION_KEY N8N_USER_MANAGEMENT_JWT_SECRET N8N_WEBHOOK_JWT_SECRET \
+         SANDBOX_API_KEYS SANDBOX_API_RUNNER_REGISTRATION_TOKEN \
+         SANDBOX_API_RUNNER_API_KEY SEARXNG_SECRET POSTGRES_PASSWORD; do
   sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" .env
 done
 ```
@@ -58,6 +58,7 @@ Wait about 20 seconds for n8n to finish its first-run migrations.
 
 ```bash
 node dev/bootstrap-creds.mjs      # first run only: creates owner + credentials
+node dev/create-webhook-jwt-cred.mjs  # first run only: creates the webhook's JWT Auth credential
 node dev/sync.mjs                 # build + deploy all 7 workflows
 ```
 
@@ -102,10 +103,11 @@ Start and bootstrap:
 ```bash
 docker compose up -d
 node dev/bootstrap-creds.mjs
+node dev/create-webhook-jwt-cred.mjs
 STORE_BASE_URL=https://perfectobd.com node dev/sync.mjs
 ```
 
-Point the widget: `window.__PERFECTO_N8N_CHAT_WEBHOOK = 'https://ai.perfectobd.com/webhook/spike/agent-chat';`
+Point the widget: `window.__PERFECTO_N8N_CHAT_WEBHOOK = 'https://ai.perfectobd.com/webhook/spike/agent-chat';` and `window.__PERFECTO_N8N_AUTH_TOKEN = '<the token — see dev/create-webhook-jwt-cred.mjs>';` (the webhook requires JWT Auth — see WIDGET-CONTRACT.md).
 
 Reverse proxy: point `ai.perfectobd.com` at `http://127.0.0.1:5678`. Add these headers:
 
@@ -209,6 +211,7 @@ Nothing is lost by a redeploy; `sync.mjs` is a patch, not a wipe. The only destr
 | `dev/sync.mjs` | **The deploy command** — build + deploy in dependency order, resolving every id from the instance, then verify |
 | `dev/read-wf.mjs` | Prints a workflow's real id, nodes and connections from the n8n API |
 | `dev/bootstrap-creds.mjs` | First run only: creates the owner account and credentials |
+| `dev/create-webhook-jwt-cred.mjs` | First run only: creates/updates the webhook's JWT Auth credential from `N8N_WEBHOOK_JWT_SECRET` |
 | `dev/deploy.mjs` | Deploys workflow JSONs (auto-detects the n8n owner) |
 | `dev/eval-harness.mjs` | Eval battery — 14 test cases (`--group hitl` for the human-in-the-loop ones) |
 | `dev/prod-bench.mjs` | Latency and token cost benchmark |

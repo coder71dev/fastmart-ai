@@ -1013,6 +1013,14 @@
       const CFG = {
         N8N: window.__PERFECTO_N8N_CHAT_WEBHOOK || "http://127.0.0.1:5678/webhook/spike/agent-chat",
         STORE: (window.__PERFECTO_STORE_BASE || "https://stg-admin.perfectobd.com").replace(/\/+$/, ""),
+        // The webhook requires JWT Auth as of 2026-10-14 (a static shared-secret
+        // bearer token, not per-user login — see WIDGET-CONTRACT.md). This default
+        // is this dev instance's own token; a real deployment overrides it with
+        // window.__PERFECTO_N8N_AUTH_TOKEN before this script runs, the same way
+        // the webhook URL and store base are overridden above.
+        AUTH_TOKEN:
+          window.__PERFECTO_N8N_AUTH_TOKEN ||
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwZXJmZWN0by13aWRnZXQiLCJpYXQiOjE3OTE5ODA3NDIsImV4cCI6MjEwNzM0MDc0Mn0.UjEBut1tocYYicFMF-D-nJ5CQuKxGFSRRZTuJRmF4o4",
       };
 
       const PLACEHOLDER =
@@ -2072,7 +2080,7 @@
                 if (action) payload.action = action;
                 r = await fetch(CFG.N8N, {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
+                  headers: { "Content-Type": "application/json", Authorization: "Bearer " + CFG.AUTH_TOKEN },
                   body: JSON.stringify(payload),
                 });
               } catch (netErr) {

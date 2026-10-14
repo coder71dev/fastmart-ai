@@ -14,6 +14,16 @@ try { credConfig = JSON.parse(fs.readFileSync('dev/../.n8n-credentials.json', 'u
 const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
 const PG_CRED_ID = process.env.PG_CRED_ID || credConfig.PG_CRED_ID || 'EsaKbJSqeQFEMuwd';
 const PG_CRED = { id: PG_CRED_ID, name: PG_CRED_NAME };
+// Gates the public webhook with JWT Auth (static shared secret — see
+// N8N_WEBHOOK_JWT_SECRET in .env.example and dev/create-webhook-jwt-cred.mjs).
+// Same fallback-literal convention as SPEC above: only correct for THIS
+// instance when run standalone, but sync.mjs's own verify() step already
+// checks every built workflow's credential references resolve by NAME on the
+// target instance and fails loudly if not — so a stale/wrong literal here can
+// never silently deploy with the wrong (or no) credential attached.
+const WEBHOOK_JWT_CRED_NAME = process.env.WEBHOOK_JWT_CRED_NAME || credConfig.WEBHOOK_JWT_CRED_NAME || 'fastmart Webhook JWT';
+const WEBHOOK_JWT_CRED_ID = process.env.WEBHOOK_JWT_CRED_ID || credConfig.WEBHOOK_JWT_CRED_ID || 'NlmmYmXG8iwr20Rp';
+const WEBHOOK_JWT_CRED = { id: WEBHOOK_JWT_CRED_ID, name: WEBHOOK_JWT_CRED_NAME };
 
 // Ids produced by dev/deploy.mjs — resolved LIVE by dev/sync.mjs, which deploys
 // each workflow first and reads its real id back from the instance. The literals
@@ -711,12 +721,18 @@ nodes.push(
     // client as one — the malformed item just flowed into AI Agent, which has no
     // chatInput to work with, and crashed into an opaque 500 "Error in workflow"
     // instead (verified live 2026-10-13, see dev/eval-harness.mjs "contract" group).
-    parameters: { httpMethod: 'POST', path: 'spike/agent-chat', responseMode: 'responseNode', options: {} },
+    // authentication: 'jwtAuth' gates this public endpoint behind a static
+    // shared-secret bearer token (see WEBHOOK_JWT_CRED above). Every caller
+    // (widget, eval-harness, any other integration) must send
+    // Authorization: Bearer <token> or n8n rejects the request before it ever
+    // reaches Prepare Input - see WIDGET-CONTRACT.md for the caller-side change.
+    parameters: { httpMethod: 'POST', path: 'spike/agent-chat', responseMode: 'responseNode', authentication: 'jwtAuth', options: {} },
     name: 'Webhook',
     type: 'n8n-nodes-base.webhook',
     typeVersion: 2,
     position: pos(0, 0),
     webhookId: WEBHOOK_ID,
+    credentials: { jwtAuth: WEBHOOK_JWT_CRED },
   }),
 );
 nodes.push(

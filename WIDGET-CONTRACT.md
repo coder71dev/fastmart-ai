@@ -9,13 +9,15 @@ Ends the spike: this is the agreed **webhook contract** the kept React widget wi
 ```
 POST {N8N_BASE_URL}/webhook/spike/agent-chat
 Content-Type: application/json
+Authorization: Bearer {WEBHOOK_JWT_TOKEN}
 ```
 
 - `N8N_BASE_URL` = where n8n is reachable from the browser.
   - Local: `http://localhost:5678`
   - VPS (Part 3): `https://ai.your-domain.com` behind a Caddy/nginx reverse proxy.
 - **Always copy the exact URL from the Webhook node's "Production URL" field in the n8n editor.** n8n registers the path exactly as saved in the workflow (here: `spike/agent-chat`, no workflow-id prefix). If a future edit changes the path or adds a `webhookId`, n8n may register `{workflowId}/webhook/spike/agent-chat` instead — the node's Production URL field is the single source of truth.
-- **Verified live 2026-09-02**, re-verified **2026-10-12**, against workflow `agent-chat (prod webhook)` (workflow id `oAlPFsGVYAlhZami`). The 2026-10-12 pass found `user_id` had become required (see below) and that `cart-add`'s URL had a typo breaking every add-to-cart call — both are now fixed in the live workflow and in `dev/build-main.mjs`.
+- **`Authorization: Bearer <token>` is REQUIRED as of 2026-10-14.** The Webhook node uses n8n's JWT Auth (credential `fastmart Webhook JWT`, HS256/Passphrase, secret in `N8N_WEBHOOK_JWT_SECRET`). This is a **static shared secret, not per-user login** — one long-lived token, signed with that secret, gets embedded in every caller (the widget's `CFG.AUTH_TOKEN`, `dev/eval-harness.mjs`'s `AUTH_TOKEN`) the same way an API key would be. It stops casual scanners/bots hitting the raw webhook URL; it does **not** stop someone who reads the widget's own JS and extracts the token — that's an inherent limit of any client-embedded secret, not something JWT fixes. Missing token → `401 "No token provided"`; wrong signature → `403 "invalid signature"`. Mint a new token with the same secret (`node dev/create-webhook-jwt-cred.mjs` creates/updates the credential; see its comments for the token itself) if you ever need to rotate it — rotating means updating every caller at the same time, since there's only one token.
+- **Verified live 2026-09-02**, re-verified **2026-10-12** and **2026-10-14** (JWT Auth added), against workflow `agent-chat (prod webhook)` (workflow id `oAlPFsGVYAlhZami`). The 2026-10-12 pass found `user_id` had become required (see below) and that `cart-add`'s URL had a typo breaking every add-to-cart call — both are now fixed in the live workflow and in `dev/build-main.mjs`.
 
 ## Request body
 

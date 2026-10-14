@@ -27,6 +27,7 @@ services:
       - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-true}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:-}
+      - N8N_WEBHOOK_JWT_SECRET=${N8N_WEBHOOK_JWT_SECRET:-}
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - NODE_FUNCTION_ALLOW_BUILTIN=http,https,util,path,url,zlib,crypto,stream,events
       # The blocks/price-guard Code node re-reads up to 5 product details plus the
