@@ -104,13 +104,27 @@ function httpText(url, { method, body } = {}) {
     req.end();
   });
 }
+// One retry on a transient failure (network blip, store cold-start) before
+// giving up - live-verified 2026-10-14: a customer's "proceed to checkout"
+// got a confidently-worded reply ("your cart is ready... total ৳2,210") with
+// an EMPTY blocks array, because this single unretried cart-read failed once
+// and the whole checkout/cart-table block silently never got built - the
+// worst combination, a confident reply with nothing for the customer to act
+// on. The store endpoint itself was healthy moments before and after (a
+// one-off blip, not a systemic outage), so a single retry covers it without
+// meaningfully slowing down the common (first-try-succeeds) case.
 async function call(url, opts) {
-  try {
-    const t = await httpText(url, { method: opts && opts.method ? opts.method : 'GET', body: opts && opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null });
-    return firstJson(t);
-  } catch (e) {
-    return null;
+  const method = opts && opts.method ? opts.method : 'GET';
+  const body = opts && opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const t = await httpText(url, { method, body });
+      const parsed = firstJson(t);
+      if (parsed !== null) return parsed;
+    } catch (e) {}
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
   }
+  return null;
 }
 
 let cats = [];
@@ -395,13 +409,27 @@ function orderMetaFrom(v, depth) {
   }
   return null;
 }
+// One retry on a transient failure (network blip, store cold-start) before
+// giving up - live-verified 2026-10-14: a customer's "proceed to checkout"
+// got a confidently-worded reply ("your cart is ready... total ৳2,210") with
+// an EMPTY blocks array, because this single unretried cart-read failed once
+// and the whole checkout/cart-table block silently never got built - the
+// worst combination, a confident reply with nothing for the customer to act
+// on. The store endpoint itself was healthy moments before and after (a
+// one-off blip, not a systemic outage), so a single retry covers it without
+// meaningfully slowing down the common (first-try-succeeds) case.
 async function call(url, opts) {
-  try {
-    const t = await httpText(url, { method: opts && opts.method ? opts.method : 'GET', body: opts && opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null });
-    return firstJson(t);
-  } catch (e) {
-    return null;
+  const method = opts && opts.method ? opts.method : 'GET';
+  const body = opts && opts.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const t = await httpText(url, { method, body });
+      const parsed = firstJson(t);
+      if (parsed !== null) return parsed;
+    } catch (e) {}
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
   }
+  return null;
 }
 function httpText(url, { method, body } = {}) {
   return new Promise((resolve) => {

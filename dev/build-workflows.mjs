@@ -476,6 +476,10 @@ function productDetailToolWorkflow() {
 // SEARCH_CODE/DETAIL_CODE above.
 // ---------------------------------------------------------------------------
 const OFFERS_CODE = `
+const j = $input.first().json ?? {};
+// An optional flash-deal NAME the customer asked about (e.g. "K-Beauty Sale").
+// Empty/missing = the general "what's on offer" summary (unchanged behavior).
+const dealQuery = String(j.query ?? j.input ?? '').trim().slice(0, 120);
 const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
 
 // Same ok/status-aware fetch as search/detail - a failed call must never read
@@ -512,6 +516,63 @@ function daysLeft(unixSeconds) {
   const ms = Number(unixSeconds) * 1000 - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return null;
   return Math.ceil(ms / 86400000);
+}
+
+// A product line in the exact style used everywhere else in this tool and in
+// SEARCH_CODE - shared so the deal-scoped branch below and the general
+// discounted-products section stay visually consistent.
+function fmtProductLine(p) {
+  const price = num(p.nonformated_price) || num(p.main_price) || num(p.web_price);
+  const was = num(p.stroked_price);
+  const pct = (was > price && was > 0) ? Math.round((1 - price / was) * 100) : 0;
+  const stock = p.in_stock ? ('IN STOCK (' + (Number(p.current_stock) || 0) + ' left)') : 'OUT OF STOCK';
+  const size = p.custom_size ? ' ' + String(p.custom_size) : '';
+  const priceTxt = pct > 0 ? (taka(price) + ' (was ' + taka(was) + ', -' + pct + '%)') : taka(price);
+  return { id: Number(p.id) || 0, inStock: !!p.in_stock, line: '- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + priceTxt + ' | ' + stock };
+}
+
+// The customer named a SPECIFIC flash deal ("show products from the K-Beauty
+// Sale") - this is a materially different question from "what's on offer"
+// (which only ever lists campaign NAMES, never their products - verified
+// 2026-10-14: asking for a named deal's products against the general summary
+// got back unrelated store-wide discounted items with zero connection to that
+// deal). Resolve the name against the real flash deal list, then fetch that
+// ONE deal's actual products - a dedicated store endpoint for exactly this.
+if (dealQuery) {
+  const flashRes = await httpText(base + '/api/v3/flash-deals');
+  const flashParsed = firstJson(flashRes.ok ? flashRes.body : null);
+  if (!flashParsed) {
+    return [{ json: { text: 'OFFERS UNAVAILABLE - the store did not return flash deal data just now. Do NOT say the deal does not exist - you have no result either way. Tell the customer to try again shortly.\\nMETA_PRODUCT_IDS: none' } }];
+  }
+  const flashDeals = Array.isArray(flashParsed.data) ? flashParsed.data : [];
+  const nq = dealQuery.toLowerCase();
+  const match = flashDeals.find((d) => {
+    const t = String((d && d.title) || '').toLowerCase();
+    return t && (t.includes(nq) || nq.includes(t));
+  });
+  if (!match) {
+    const names = flashDeals.map((d) => String((d && d.title) || '').trim()).filter(Boolean);
+    const text = names.length
+      ? ('No flash deal matching "' + dealQuery + '" is running right now. Current flash sales: ' + names.join(', ') + '.\\nMETA_PRODUCT_IDS: none')
+      : ('No flash deal matching "' + dealQuery + '" is running right now, and there are no active flash sales at all currently.\\nMETA_PRODUCT_IDS: none');
+    return [{ json: { text } }];
+  }
+  const prodRes = await httpText(base + '/api/v3/flash-deal-products/' + match.id + '?limit=12');
+  const prodParsed = firstJson(prodRes.ok ? prodRes.body : null);
+  if (!prodParsed) {
+    return [{ json: { text: 'OFFERS UNAVAILABLE - found the ' + match.title + ' flash sale but the store did not return its products just now. Do NOT say it has no products - you have no result either way. Tell the customer to try again shortly.\\nMETA_PRODUCT_IDS: none' } }];
+  }
+  const prodArr = Array.isArray(prodParsed.data) ? prodParsed.data : [];
+  if (!prodArr.length) {
+    return [{ json: { text: 'The ' + match.title + ' flash sale is running right now but has no products listed yet - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
+  }
+  const left = daysLeft(match.date);
+  const rows = prodArr.slice(0, 12).map(fmtProductLine);
+  const ids = rows.filter((r) => r.inStock).map((r) => r.id).slice(0, 6);
+  const text = "Here's what's currently in " + match.title + (left ? ' (ends in ' + left + ' day' + (left === 1 ? '' : 's') + ')' : '') + ":\\n" +
+    rows.map((r) => r.line).join('\\n') +
+    (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
+  return [{ json: { text } }];
 }
 
 const [flashRes, comboRes, discRes] = await Promise.all([

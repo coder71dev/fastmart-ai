@@ -350,6 +350,23 @@ battery.push(['asks for current offers gets a real answer, not a refusal', 'offe
   return { ok: !refused && looksLikeAnswer && r.length > 5, detail: r.slice(0, 150) };
 }]);
 
+// A named flash deal ("show products from the K-Beauty Sale") used to dump
+// the whole unrelated general-offers summary - the offers tool had no way to
+// fetch one deal's actual products (fixed 2026-10-14 via
+// /api/v3/flash-deal-products/{id}). Discovers a REAL current deal name first
+// (never hardcode one - the catalog's active flash deals change over time)
+// rather than hardcoding one, then asks for its products specifically.
+battery.push(['named flash deal returns that deal\'s real products', 'offers', true, async () => {
+  const general = await postChat({ message: 'show me flash deals' });
+  const m = (general.json?.reply ?? '').match(/FLASH SALE:\s*([^\n(–-]+)/i);
+  const dealName = m ? m[1].trim() : null;
+  if (!dealName) return { ok: false, detail: `no flash deal name found in general summary: ${(general.json?.reply ?? '').slice(0, 150)}` };
+  const { json } = await postChat({ message: `show me products from the ${dealName} flash deal` });
+  const cards = cardsOf(json);
+  const r = json?.reply ?? '';
+  return { ok: cards.length > 0, detail: `deal="${dealName}" cards=${cards.length}: ${r.slice(0, 100)}` };
+}]);
+
 // ---- support --------------------------------------------------------------
 battery.push(['return policy answer', 'support', false, async () => {
   const { json } = await postChat({ message: 'what is your return policy?' });
