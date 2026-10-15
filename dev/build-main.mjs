@@ -551,6 +551,11 @@ let wantsCheckoutObs = false;
 let wantsOrderObs = false;
 let cartAddRan = false;
 let orderMeta = null;
+// Captures the current-offers tool's raw text when it's the general-summary
+// call (FLASH SALE:/COMBO OFFER: lines only appear on that branch, never on
+// the named-deal branch - see OFFERS_CODE) so the salvage below can compare
+// against it.
+let offersObsText = '';
 try {
   const steps = $input.first().json.intermediateSteps || [];
   for (const st of steps) {
@@ -565,6 +570,7 @@ try {
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
     if (/\\[BLOCK\\s+checkout\\]/i.test(s)) wantsCheckoutObs = true;
     if (/\\[BLOCK\\s+order-status\\]/i.test(s)) wantsOrderObs = true;
+    if (toolName === 'get_current_offers' && /FLASH SALE:|COMBO OFFER:/i.test(s)) offersObsText = s;
     // The order specialist emits META_ORDER_JSON carrying the already-PII-free order payload.
     if (!orderMeta) orderMeta = orderMetaFrom(o);
     if (!ids.length) {
@@ -586,6 +592,26 @@ try {
     }
   }
 } catch {}
+// Deterministic backstop for the same intermittent-drop pattern as
+// stripRedundantProductLines below: live-verified 2026-10-15 - the model
+// dropped ALL THREE "FLASH SALE:" lines and every "COMBO OFFER:" line from
+// its reply roughly 1 in 4 tries, despite dev/prompts.js's explicit "every
+// FLASH SALE and COMBO OFFER line it returned must appear in your reply...
+// do not make it" instruction - while still correctly listing the plain
+// discounted products that came after them in the same tool text. Compare
+// the raw tool text (ground truth) against the reply and re-append whatever
+// is genuinely missing; matching on the deal/offer NAME (not the whole line)
+// tolerates the model's own light reformatting without double-posting it.
+if (offersObsText) {
+  const dealLines = offersObsText.split('\\n').filter((l) => /^(FLASH SALE|COMBO OFFER):/i.test(l.trim()));
+  const missing = dealLines.filter((l) => {
+    const name = l.replace(/^(FLASH SALE|COMBO OFFER):\\s*/i, '').split(/\\s+-\\s+/)[0].trim();
+    return name && !replyTxt.toLowerCase().includes(name.toLowerCase());
+  });
+  if (missing.length) {
+    replyTxt = replyTxt.trim() + '\\n\\nAlso currently running:\\n' + missing.map((l) => '• ' + l.trim()).join('\\n');
+  }
+}
 const doGrid = wantsGrid || wantsGridObs;
 const doCart = wantsCart || wantsCartObs || cartAddRan;
 const doCheckout = wantsCheckout || wantsCheckoutObs;
