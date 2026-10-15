@@ -340,11 +340,19 @@ function guardTotal(reply, actual) {
 // followed — verified live 2026-10-13: it still wrote the list, in varying
 // formats (different bullet glyphs, a trailing generic clause), after 3
 // escalating prompt rewrites. This is the deterministic backstop. A line only
-// counts as redundant (and gets stripped) when it names ONE product in bold,
-// quotes a ৳ price, and adds no second distinguishing fact — a SECOND bold
-// span or the word "shade" (e.g. a color-search line picking a specific shade,
-// which the card cannot show) means the line carries real information and is
-// left alone, regardless of its exact bullet/format.
+// counts as redundant (and gets stripped) when it names ONE product in bold
+// AND, once the bold span/price/discount parenthetical are removed, nothing
+// but punctuation is left — i.e. the line is LITERALLY just "name + price",
+// adding no fact the card doesn't already show. This is a real check, not
+// just "has exactly one bold span": verified live 2026-10-15, a full-profile
+// moisturizer recommendation wrote three perfectly good bullets, each one
+// bold product name followed by a real why-it-fits clause (no price on the
+// line at all) — the OLD one-bold-span-means-redundant check stripped all
+// three anyway, leaving the intro sentence ("...ranging from ৳1,050 to
+// ৳1,450:") dangling with nothing after its colon, a reply that reads as
+// cut off. A SECOND bold span or the word "shade"/"step"/"morning"/"night"/
+// "variant" (a color-search shade pick, a routine step, a size the card
+// can't show) also always means real information, left alone regardless.
 function stripRedundantProductLines(s) {
   const lines = String(s ?? '').split('\\n');
   const bulletRe = /^[-*•●‣·]\\s*/;
@@ -358,13 +366,24 @@ function stripRedundantProductLines(s) {
     // product again" — a chosen shade, a routine step, or a size the card's
     // own name/price can't convey — leave those lines alone.
     if (/\\b(shade|step|morning|night|variant)\\b/i.test(rest)) return false;
-    return true;
+    const withoutBold = rest.replace(/\\*\\*(.+?)\\*\\*/, '');
+    const bare = withoutBold
+      .replace(/৳\\s*[\\d,]+(?:\\.\\d+)?/g, '') // the price itself
+      .replace(/\\(was[^)]*\\)/gi, '') // "(was ৳X, -N%)" discount parenthetical
+      .replace(/[\\s–—\\-•:,.()]+/g, ''); // leftover dashes/punctuation/whitespace
+    return bare.length === 0; // nothing but name + price(+discount) survives
   };
   const kept = lines.filter((l) => !isRedundant(l));
   // Only treat it as the redundant-list pattern (and actually drop anything) when
   // 2+ lines matched — a single bolded name+price is normal single-product prose.
   if (lines.length - kept.length < 2) return s;
-  return kept.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+  let result = kept.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+  // Belt-and-suspenders: if stripping still leaves an introductory "...ranging
+  // from X to Y:" sentence with nothing after it, a dangling colon reads as a
+  // cut-off reply even though the product cards below carry every item — turn
+  // it into a period rather than ship something that looks broken.
+  if (/:\\s*$/.test(result)) result = result.replace(/:\\s*$/, '.');
+  return result;
 }
 const base = ($env.STORE_BASE_URL || 'https://stg-admin.perfectobd.com').replace(/\\/+$/, '');
 function textOf(r) {
