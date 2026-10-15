@@ -875,6 +875,35 @@
                       </div>
                     </div>
 
+                    <!-- profile-questions: human-in-the-loop — collects skin/concern/budget (or
+                         whichever fields the backend says are missing, sourced from its
+                         admin-editable question list) in one form, submitted all at once -->
+                    <div x-show="b.type === 'profile-questions'" x-data="{ ans: {} }" class="overflow-hidden rounded-2xl border border-clay/30 bg-white" x-cloak>
+                      <p class="border-b border-sand px-3 py-2.5 text-[10px] uppercase tracking-wider text-ink/40">Help me narrow this down</p>
+                      <div class="space-y-2.5 px-3 py-3">
+                        <template x-for="(f, fi) in (b.fields || [])" :key="f.key">
+                          <div>
+                            <label class="mb-1 block text-[12px] font-medium text-ink/70" x-text="f.label"></label>
+                            <select x-show="f.type !== 'text'" x-model="ans[f.key]" class="w-full rounded-xl border border-sand bg-white px-2.5 py-2 text-[13px]">
+                              <option value="">Select…</option>
+                              <template x-for="o in f.options" :key="o">
+                                <option :value="o" x-text="o"></option>
+                              </template>
+                            </select>
+                            <input x-show="f.type === 'text'" x-model="ans[f.key]" type="text" class="w-full rounded-xl border border-sand bg-white px-2.5 py-2 text-[13px]" :placeholder="f.label" />
+                          </div>
+                        </template>
+                      </div>
+                      <div class="px-3 pb-3">
+                        <button
+                          @click="submitProfileAnswers(b, ans)"
+                          :disabled="typing || mi !== messages.length - 1 || !Object.values(ans).some((v) => v)"
+                          class="w-full rounded-full bg-clay py-2 text-center text-[12px] font-semibold text-cream transition disabled:opacity-40"
+                          x-text="b.submitLabel || 'Continue'"
+                        ></button>
+                      </div>
+                    </div>
+
                     <div x-show="b.type === 'category-carousel'" class="flex flex-wrap gap-1.5" x-cloak>
                       <template x-for="c in (b.categories || [])" :key="c">
                         <button @click="pickCategoryByName(c)" class="rounded-full border border-sand bg-white px-3 py-1.5 text-[12px] font-medium transition hover:border-clay" x-text="c"></button>
@@ -1279,6 +1308,23 @@
             approveLabel: b.approveLabel ? String(b.approveLabel) : "Add to cart",
             denyLabel: b.denyLabel ? String(b.denyLabel) : "Cancel",
           };
+        }
+        // profile-questions: the customer answers skin/concern/budget (or
+        // whichever fields the backend's admin-editable question list says are
+        // still missing) in one form, submitted back as a single `action`
+        // (see submitProfileAnswers) — same human-in-the-loop shape as
+        // variant-picker/approval above.
+        if (t === "profile-questions") {
+          const fields = (b.fields ?? [])
+            .map((f) => ({
+              key: String(f.key ?? "").trim(),
+              label: String(f.label ?? "").trim(),
+              type: String(f.type ?? "select").trim() || "select",
+              options: Array.isArray(f.options) ? f.options.map((o) => String(o).trim()).filter(Boolean) : [],
+            }))
+            .filter((f) => f.key && f.label);
+          if (!fields.length) return null;
+          return { type: t, fields, submitLabel: b.submitLabel ? String(b.submitLabel) : "Continue" };
         }
         return null;
       }
@@ -1972,7 +2018,7 @@
             const blocks = m.blocks || [];
             const chipBlock = blocks.find((b) => b.type === "chips");
             if (chipBlock && Array.isArray(chipBlock.chips) && chipBlock.chips.length) return this.noEcho(chipBlock.chips, m).slice(0, 3);
-            if (blocks.some((b) => b.type === "variant-picker" || b.type === "approval")) return [];
+            if (blocks.some((b) => b.type === "variant-picker" || b.type === "approval" || b.type === "profile-questions")) return [];
             return this.noEcho(this.suggest(m), m).slice(0, 3);
           },
           // Never offer a "next step" that just repeats what the customer already
@@ -2064,6 +2110,25 @@
             if (!items.length) return;
             const label = yes ? (b.approveLabel || "Yes, confirm") : (b.denyLabel || "No, cancel");
             return this.sendAction(label, { type: "approval", decision: yes ? "approve" : "decline", action: b.action || "cart-add", items });
+          },
+          // profile-questions form submit — only skin/concern/budget are real
+          // profile fields (what CUSTOMER PROFILE and profileObj() both use); any
+          // other field key the admin-editable question list might define in the
+          // future still rides along in the action for the backend to use, it
+          // just isn't persisted into the local profile/localStorage here.
+          submitProfileAnswers(b, ans) {
+            const answers = {};
+            for (const f of b.fields || []) {
+              const v = (ans[f.key] || "").toString().trim();
+              if (v) answers[f.key] = v;
+            }
+            if (!Object.keys(answers).length) return;
+            const known = { skin: answers.skin, concern: answers.concern, budget: answers.budget };
+            const patch = {};
+            for (const k of ["skin", "concern", "budget"]) if (known[k]) patch[k] = known[k];
+            if (Object.keys(patch).length) this.setProfile(patch);
+            const label = (b.fields || []).map((f) => answers[f.key]).filter(Boolean).join(", ") || "Continue";
+            return this.sendAction(label, { type: "profile-answers", answers });
           },
           // One turn against the webhook. Never ends silently: every path either
           // renders an answer or an error bubble (with a retry affordance).

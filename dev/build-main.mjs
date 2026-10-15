@@ -176,6 +176,16 @@ function buildActionLine(a) {
     if (!pid) return '';
     return 'CUSTOMER ACTION: variant-selected product_id=' + pid + ' variant=' + (optName(a.variant) || '(none)') + ' quantity=' + (intOf(a.quantity) || 1) + '. Call cart-add now with these exact values, then confirm what was added.';
   }
+  if (t === 'profile-answers') {
+    // The widget submits all of skin/concern/budget at once from the
+    // profile-questions block (built in RESPONSE_CODE from the admin-editable
+    // Data Table) - answers are merged into CUSTOMER PROFILE below directly
+    // (same keys as the regular body.profile field), so this line is just a
+    // short nudge, not a repeat of the values.
+    const ans = (a.answers && typeof a.answers === 'object') ? a.answers : {};
+    if (!ans.skin && !ans.concern && !ans.budget) return '';
+    return 'CUSTOMER ACTION: the customer just submitted the profile-questions form - CUSTOMER PROFILE above already reflects their answers. Proceed with the recommendation now using it; do not ask again.';
+  }
   if (t === 'approval') {
     const items = Array.isArray(a.items) ? a.items.filter((x) => x && intOf(x.product_id)).slice(0, 10) : [];
     const list = items.map((x) => 'product_id=' + intOf(x.product_id) + ' variant=' + (optName(x.variant) || '(none)') + ' quantity=' + (intOf(x.quantity) || 1)).join('; ');
@@ -191,6 +201,17 @@ function buildActionLine(a) {
 }
 const action = (body.action && typeof body.action === 'object') ? body.action : null;
 const actionLine = buildActionLine(action);
+// A profile-answers submission applies to THIS turn immediately, even if the
+// caller hasn't echoed it back via body.profile yet (that happens on the
+// NEXT request per the usual client-managed-profile convention) - without
+// this merge the CUSTOMER PROFILE line below would still say "not provided"
+// on the very turn the customer just answered.
+const submittedAnswers = (action && action.type === 'profile-answers' && action.answers && typeof action.answers === 'object') ? action.answers : null;
+const effProfile = {
+  skin: (submittedAnswers && submittedAnswers.skin) || (profile && profile.skin) || null,
+  concern: (submittedAnswers && submittedAnswers.concern) || (profile && profile.concern) || null,
+  budget: (submittedAnswers && submittedAnswers.budget) || (profile && profile.budget) || null,
+};
 
 const parts = [];
 parts.push('[guest cart user: ' + userId + ']');
@@ -209,9 +230,9 @@ parts.push(cartTxt);
 // per field is what lets the orchestrator tell "nothing known yet" apart from
 // "this turn just has no CUSTOMER PROFILE block", and ask for exactly the
 // fields actually missing instead of guessing or re-asking ones it already has.
-parts.push('CUSTOMER PROFILE: Skin: ' + ((profile && profile.skin) || 'not provided') +
-  ' | Concern: ' + ((profile && profile.concern) || 'not provided') +
-  ' | Budget: ' + ((profile && profile.budget) || 'not provided'));
+parts.push('CUSTOMER PROFILE: Skin: ' + (effProfile.skin || 'not provided') +
+  ' | Concern: ' + (effProfile.concern || 'not provided') +
+  ' | Budget: ' + (effProfile.budget || 'not provided'));
 
 if (actionLine) parts.push(actionLine);
 
@@ -320,6 +341,7 @@ function stripFooter(s) {
     .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
+    .replace(/META_PROFILE_ASK:[^\\n]*\\n?/gi, '')
     .trim();
 }
 function normalizeCurrency(s) {
@@ -559,6 +581,22 @@ try {
     if (Array.isArray(parsed)) suggestions = parsed.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim().slice(0, 80)).slice(0, 3);
   }
 } catch {}
+// Which of skin type/concern/budget the model decided are still missing on a
+// general-recommendation turn (dev/prompts.js profile-question rule) - parsed
+// the same way as META_SUGGESTIONS, so the actual question can be built
+// deterministically below instead of trusting the model's prose to include it.
+let profileAsk = [];
+try {
+  const pam = replyTxt.match(/META_PROFILE_ASK:\\s*(\\[.*?\\])/i);
+  if (pam) {
+    const parsed = JSON.parse(pam[1]);
+    const allowed = ['skin type', 'concern', 'budget'];
+    if (Array.isArray(parsed)) {
+      const picked = parsed.filter((s) => typeof s === 'string' && allowed.includes(s.trim().toLowerCase())).map((s) => s.trim().toLowerCase());
+      profileAsk = allowed.filter((f) => picked.includes(f));
+    }
+  }
+} catch {}
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
 // product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
@@ -750,6 +788,36 @@ if (wantsApproval && approvalMeta && Array.isArray(approvalMeta.items)) {
     blocks.push({ type: 'approval', action: String(approvalMeta.action || 'cart-add'), summary: String(approvalMeta.summary || 'Confirm this cart change').slice(0, 200), items, approveLabel: 'Add to cart', denyLabel: 'Cancel' });
   }
 }
+// PROFILE QUESTIONS — a single tappable form for whichever of skin/concern/
+// budget META_PROFILE_ASK named, built from the admin-editable Data Table
+// (field label/type/options never baked into this file - see "Profile
+// Questions Table" node's own comment) so the actual question wording and
+// choices can be added/reworded/removed without a code change or redeploy.
+// Gracefully produces no block (the prose question below still covers it)
+// when the table is missing, empty, or lacks a row for a wanted field -
+// onError: 'continueRegularOutput' on that node plus this filter means a
+// misconfigured table degrades to plain text, never a broken turn.
+let wantsProfileAsk = false;
+if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout) {
+  try {
+    const keyOf = { 'skin type': 'skin', concern: 'concern', budget: 'budget' };
+    const wantedKeys = profileAsk.map((f) => keyOf[f]).filter(Boolean);
+    const rows = $('Profile Questions Table').all().map((it) => it.json);
+    const fields = rows
+      .filter((r) => wantedKeys.includes(String(r.field_key || '').trim()))
+      .map((r) => ({
+        key: String(r.field_key || '').trim(),
+        label: String(r.label || '').trim(),
+        type: String(r.field_type || 'select').trim() || 'select',
+        options: String(r.options || '').split(',').map((o) => o.trim()).filter(Boolean),
+      }))
+      .filter((f) => f.key && f.label);
+    if (fields.length) {
+      blocks.push({ type: 'profile-questions', fields, submitLabel: 'Continue' });
+      wantsProfileAsk = true;
+    }
+  } catch {}
+}
 out.blocks = blocks;
 // Deterministic backstop for the same reason as stripRedundantProductLines below
 // and the exhausted-iterations salvage elsewhere in this codebase: the prompt
@@ -759,7 +827,24 @@ out.blocks = blocks;
 // widget's own chip precedence checks data.suggestions BEFORE it checks for
 // these block types, so an un-caught suggestions array would bury the actual
 // action under more pills.
-out.suggestions = (wantsVariant || wantsApproval || doCheckout) ? [] : suggestions;
+out.suggestions = (wantsVariant || wantsApproval || doCheckout || wantsProfileAsk) ? [] : suggestions;
+// Deterministic backstop for the profile-question rule (dev/prompts.js): the
+// model is asked to end a general-recommendation reply with ONE combined
+// question for whichever of skin type/concern/budget it names via
+// META_PROFILE_ASK, but live-verified 2026-10-15 - "I need facewash"/"I need
+// makeup" with no saved profile got a full, correct recommendation and NO
+// follow-up question at all, even though nothing stops the model from
+// reliably deciding the right fields are missing (that part worked every
+// time tested). Build the actual question here from the structured marker
+// instead of trusting the model's prose to include it - same pattern as
+// META_SUGGESTIONS/META_PRODUCT_IDS elsewhere in this file. Skipped on
+// variant-picker/approval/checkout turns (their own CTA already carries the
+// turn) and when the reply already ends with a question mark (the model
+// asked something itself - a second question right after would read oddly).
+if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !/[?\uff1f]\\s*$/.test(replyTxt.trim())) {
+  const joinFields = (arr) => (arr.length === 1 ? arr[0] : (arr.length === 2 ? arr[0] + ' and ' + arr[1] : arr.slice(0, -1).join(', ') + ', and ' + arr[arr.length - 1]));
+  replyTxt = replyTxt.trim() + '\\nWhat is your ' + joinFields(profileAsk) + ', so I can narrow this down further for you?';
+}
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
 // token_usage stays null on this n8n version and that is not fixable in-workflow:
@@ -884,6 +969,38 @@ nodes.push(
     position: pos(460, 0),
   }),
 );
+nodes.push(
+  node({
+    // Admin-editable source of the profile-questions block's field definitions
+    // (label/type/options per field — see RESPONSE_CODE below) — deliberately
+    // an n8n Data Table, not a hardcoded list in this file, so a non-developer
+    // can add/remove/reword a question (or add a new profile field entirely)
+    // from n8n's own Data Tables UI without a code change or redeploy. Runs in
+    // parallel with AI Agent (not gating it) and is read by name, never a
+    // baked-in id — same "resolve by name on whatever instance this is" rule
+    // as every credential/sub-workflow reference elsewhere in this file (see
+    // AGENTS.md §2 on why a copied literal id breaks across instances).
+    // onError: a missing/misconfigured table must NEVER take down the whole
+    // chat turn — RESPONSE_CODE already falls back to a plain-text question
+    // when this comes back empty, so continuing past a node error here just
+    // means "no form block this turn", not a broken reply.
+    parameters: {
+      resource: 'row',
+      operation: 'get',
+      dataTableId: { __rl: true, mode: 'name', value: 'profile_questions', cachedResultName: 'profile_questions' },
+      filters: { conditions: [{ keyName: 'active', condition: 'eq', keyValue: true }] },
+      returnAll: true,
+      orderBy: true,
+      orderByColumn: 'sort_order',
+      orderByDirection: 'ASC',
+    },
+    name: 'Profile Questions Table',
+    type: 'n8n-nodes-base.dataTable',
+    typeVersion: 1.1,
+    position: pos(460, 200),
+    onError: 'continueRegularOutput',
+  }),
+);
 nodes.push(modelNode(460, -200));
 
 nodes.push(
@@ -942,7 +1059,7 @@ nodes.push(
 connections['Webhook'] = { main: [[{ node: 'Prepare Input', type: 'main', index: 0 }]] };
 connections['Prepare Input'] = { main: [[{ node: 'User ID Present?', type: 'main', index: 0 }]] };
 // If output 0 = true (error present) -> Respond 400; output 1 = false (normal) -> AI Agent.
-connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }]] };
+connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
 connections['AI Agent'] = { main: [[{ node: 'Response', type: 'main', index: 0 }]] };
