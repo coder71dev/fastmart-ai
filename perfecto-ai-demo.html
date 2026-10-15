@@ -884,12 +884,22 @@
                         <template x-for="(f, fi) in (b.fields || [])" :key="f.key">
                           <div>
                             <label class="mb-1 block text-[12px] font-medium text-ink/70" x-text="f.label"></label>
-                            <select x-show="f.type !== 'text'" x-model="ans[f.key]" class="w-full rounded-xl border border-sand bg-white px-2.5 py-2 text-[13px]">
-                              <option value="">Select…</option>
+                            <!-- radio-style pills (type 'select', one tap = the whole answer) or
+                                 checkbox-style pills (type 'multiselect', tap toggles in/out, the
+                                 picks join as "this, that & other" on submit) — easier to tap than
+                                 a native select, especially on mobile, and matches the variant-
+                                 picker's own button-chip pattern above -->
+                            <div x-show="f.type !== 'text'" class="flex flex-wrap gap-1.5">
                               <template x-for="o in f.options" :key="o">
-                                <option :value="o" x-text="o"></option>
+                                <button
+                                  type="button"
+                                  @click="f.type === 'multiselect' ? toggleAnswer(ans, f.key, o) : (ans[f.key] = o)"
+                                  class="rounded-full border px-3 py-1.5 text-[12px] font-medium transition"
+                                  :class="isChosen(ans, f.key, o) ? 'border-clay bg-clay text-cream' : 'border-sand bg-white text-ink/70 hover:border-clay/40'"
+                                  x-text="o"
+                                ></button>
                               </template>
-                            </select>
+                            </div>
                             <input x-show="f.type === 'text'" x-model="ans[f.key]" type="text" class="w-full rounded-xl border border-sand bg-white px-2.5 py-2 text-[13px]" :placeholder="f.label" />
                           </div>
                         </template>
@@ -897,7 +907,7 @@
                       <div class="px-3 pb-3">
                         <button
                           @click="submitProfileAnswers(b, ans)"
-                          :disabled="typing || mi !== messages.length - 1 || !Object.values(ans).some((v) => v)"
+                          :disabled="typing || mi !== messages.length - 1 || !Object.values(ans).some((v) => Array.isArray(v) ? v.length : v)"
                           class="w-full rounded-full bg-clay py-2 text-center text-[12px] font-semibold text-cream transition disabled:opacity-40"
                           x-text="b.submitLabel || 'Continue'"
                         ></button>
@@ -1421,7 +1431,14 @@
               if (p && typeof p === "object") this.profile = { ...this.profile, ...p };
             } catch {}
             this.sessions = loadSessions();
-            const saved = localStorage.getItem(ACTIVE_KEY) || "";
+            // Unguarded localStorage access here previously meant a thrown read (private
+            // browsing, a storage policy, a restrictive sandboxed origin) aborted boot()
+            // entirely right after sessions loaded — skipping newChat()/syncSession() and
+            // every call after it (loadCategories/loadProducts/loadCart), so history (and
+            // everything else) looked broken for no visible reason. Every localStorage call
+            // in this file is wrapped except these two were — matched now for consistency.
+            let saved = "";
+            try { saved = localStorage.getItem(ACTIVE_KEY) || ""; } catch {}
             this.activeId = this.sessions.some((s) => s.id === saved) ? saved : this.sessions[0] ? this.sessions[0].id : "";
             if (this.activeId) {
               this.syncSession();
@@ -1429,7 +1446,7 @@
             } else {
               this.newChat();
             }
-            this.open = localStorage.getItem("perfecto_chat_open") === "1";
+            try { this.open = localStorage.getItem("perfecto_chat_open") === "1"; } catch {}
             this.loadSettings();
             this.loadCategories();
             this.loadProducts(true);
@@ -2111,6 +2128,28 @@
             const label = yes ? (b.approveLabel || "Yes, confirm") : (b.denyLabel || "No, cancel");
             return this.sendAction(label, { type: "approval", decision: yes ? "approve" : "decline", action: b.action || "cart-add", items });
           },
+          // Multi-select pills store picks as an array in `ans[key]`; toggleAnswer
+          // adds/removes one, isChosen highlights it (array membership) or matches
+          // it (plain string, single-select). joinAnd turns a pick list into the
+          // "this, that & other" / "this & that" phrasing used both in the chip
+          // label and in what's actually sent as the field's answer.
+          toggleAnswer(ans, key, value) {
+            const cur = Array.isArray(ans[key]) ? ans[key].slice() : [];
+            const i = cur.indexOf(value);
+            if (i >= 0) cur.splice(i, 1); else cur.push(value);
+            ans[key] = cur;
+          },
+          isChosen(ans, key, value) {
+            const v = ans[key];
+            return Array.isArray(v) ? v.includes(value) : v === value;
+          },
+          joinAnd(arr) {
+            const a = (arr || []).filter(Boolean);
+            if (!a.length) return "";
+            if (a.length === 1) return a[0];
+            if (a.length === 2) return a[0] + " & " + a[1];
+            return a.slice(0, -1).join(", ") + " & " + a[a.length - 1];
+          },
           // profile-questions form submit — only skin/concern/budget are real
           // profile fields (what CUSTOMER PROFILE and profileObj() both use); any
           // other field key the admin-editable question list might define in the
@@ -2119,7 +2158,8 @@
           submitProfileAnswers(b, ans) {
             const answers = {};
             for (const f of b.fields || []) {
-              const v = (ans[f.key] || "").toString().trim();
+              const raw = ans[f.key];
+              const v = Array.isArray(raw) ? this.joinAnd(raw) : (raw || "").toString().trim();
               if (v) answers[f.key] = v;
             }
             if (!Object.keys(answers).length) return;
