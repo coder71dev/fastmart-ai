@@ -633,7 +633,7 @@
                 <div x-show="m.text" class="flex gap-2">
                   <span class="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-clay text-xs text-cream">✨</span>
                   <div class="min-w-0 max-w-[88%] space-y-2 rounded-2xl rounded-tl-md bg-white px-3.5 py-2.5 text-sm leading-relaxed shadow-sm">
-                    <template x-for="(line, li) in (m.text || '').split('\n')" :key="li">
+                    <template x-for="(line, li) in ((m.typedText ?? m.text) || '').split('\n')" :key="li">
                       <p x-html="fmt(line)"></p>
                     </template>
                     <button
@@ -646,7 +646,10 @@
                 </div>
 
                 <!-- blocks: all 10 OutputBlock types (incl. the two human-in-the-loop steps) -->
-                <template x-for="(b, bi) in (m.blocks || [])" :key="bi">
+                <!-- held back until the text above finishes its typing reveal (blocksShown
+                     defaults true via ?? for restored/history messages and text-less turns -
+                     see ai()/typeOut() -  so product cards/forms don't pop in mid-sentence -->
+                <template x-for="(b, bi) in ((m.blocksShown ?? true) ? (m.blocks || []) : [])" :key="bi">
                   <div class="pl-9">
                     <div x-show="b.type === 'product-grid'" class="space-y-2">
                       <template x-for="p in (b.products || [])" :key="p.id">
@@ -938,7 +941,7 @@
                 </template>
 
                 <!-- suggested next steps — contextual guided moves, only on the latest turn -->
-                <div x-show="moves(m, mi).length" class="pl-9 sugg">
+                <div x-show="(m.blocksShown ?? true) && moves(m, mi).length" class="pl-9 sugg">
                   <p class="sugg-head">
                     <svg class="h-3 w-3 shrink-0 text-clay" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l1.7 4.6L18.3 9l-4.6 1.7L12 15.3l-1.7-4.6L5.7 9l4.6-1.4L12 3Z" /></svg>
                     Suggested next steps
@@ -1410,6 +1413,7 @@
           typing: false,
           messages: [],
           cid: "",
+          __tidSeq: 0, // typeOut()'s per-message id counter, see ai()'s own comment
           sessions: [],
           activeId: "",
           historyOpen: false,
@@ -1998,9 +2002,65 @@
             const blocks = (extra.blocks || []).map(normalizeBlock).filter(Boolean);
             const ct = blocks.find((b) => b.type === "cart-table");
             if (ct) this.cart = ct.items;
-            this.messages.push({ role: "ai", text, blocks, chips: extra.chips || [], tiles: extra.tiles || null, options: extra.options || null, retry: extra.retry || null, retryAction: extra.retryAction || null });
+            // typedText starts empty and blocksShown starts false (unless there's no
+            // text to type at all) so typeOut() below can reveal the reply the way a
+            // real stream would feel, without actually needing one - see typeOut()'s
+            // own comment for why this is cosmetic-only, not a real SSE stream.
+            // Both are left off restored/history messages (normalizeMessage() above
+            // doesn't carry them), so reopening a past conversation shows it complete
+            // and instant, never re-animated.
+            // __tid: typeOut() below re-looks-up the message by this id on every tick
+            // instead of holding the raw pre-push object reference - mutating that raw
+            // reference directly didn't trigger Alpine's reactivity (only the push
+            // itself re-rendered, so the very first tick showed then the rest silently
+            // no-opped), and a plain array index would break if the user switches
+            // conversations mid-animation (messages gets swapped to a different
+            // array - id lookup just naturally stops finding it and halts quietly).
+            const msg = { role: "ai", text, typedText: "", blocksShown: !text, blocks, chips: extra.chips || [], tiles: extra.tiles || null, options: extra.options || null, retry: extra.retry || null, retryAction: extra.retryAction || null, __tid: ++this.__tidSeq };
+            this.messages.push(msg);
             this.persist();
             this.scroll();
+            this.typeOut(msg);
+          },
+          // Client-side typing effect over the reply text, which has ALREADY fully
+          // arrived, already cleaned by the backend (META_* footers / [BLOCK ...]
+          // markers stripped, redundant lines removed, the profile question
+          // appended, etc.) - this never touches raw/unprocessed model output.
+          // Real server-paced SSE of that cleaned text turned out not to be
+          // possible from this app's n8n Code-node Response pipeline: n8n's
+          // sendChunk() (what actually paces bytes onto the wire) is only called
+          // by a few node types' own native implementation (Respond to Webhook,
+          // the AI Agent's own token hook) - a Code node's sandboxed jsCode has no
+          // access to it at all (only $json/$env/$input/etc., checked against
+          // n8n's own Sandbox.js), and even Respond to Webhook's streaming path
+          // sends every item in one synchronous burst with no pacing between them.
+          // Raw token streaming WOULD work, but ships exactly the unprocessed
+          // marker text this session's fixes exist to hide. So: reveal the
+          // complete, correct text progressively here instead - same visual
+          // result for the customer, zero backend risk, no contract change.
+          typeOut(msg) {
+            const words = (msg.text || "").split(/(\s+)/); // keeps whitespace tokens so the join reconstructs exactly
+            if (!words.some((w) => w.trim())) { msg.typedText = msg.text; msg.blocksShown = true; return; }
+            const tid = msg.__tid;
+            const INTERVAL = 30; // ms between reveals
+            const targetMs = Math.min(2200, Math.max(500, words.length * 14)); // bounded so long replies don't take forever
+            const ticks = Math.max(1, Math.round(targetMs / INTERVAL));
+            const perTick = Math.max(1, Math.ceil(words.length / ticks));
+            let i = 0;
+            const step = () => {
+              // Re-find the message THROUGH this.messages each tick (see __tid's own
+              // comment in ai()) rather than mutating the closed-over raw object -
+              // also doubles as the stop condition if the conversation was switched
+              // or this message got deleted mid-animation.
+              const target = this.messages.find((m) => m.__tid === tid);
+              if (!target) return;
+              i = Math.min(words.length, i + perTick);
+              target.typedText = words.slice(0, i).join("");
+              this.scroll();
+              if (i < words.length) setTimeout(step, INTERVAL);
+              else target.blocksShown = true;
+            };
+            step();
           },
           greet() {
             this.messages.push({
