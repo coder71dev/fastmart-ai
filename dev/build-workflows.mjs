@@ -614,10 +614,6 @@ for (const c of combos.slice(0, 3)) {
   dealCards.push({ icon: '\u{1F381}', title: name, body });
 }
 
-// lines now holds ONLY the discounted-product bullets - the deal names/dates
-// live solely in dealCards above.
-const lines = [];
-
 // Biggest real savings first - that is what "current offers" means to a customer,
 // not whatever random order the store API happened to return.
 const discounted = discRaw.map((p) => {
@@ -627,28 +623,33 @@ const discounted = discRaw.map((p) => {
   return { p, price, was, pct };
 }).filter((x) => x.pct > 0).sort((a, b) => b.pct - a.pct).slice(0, 6);
 
+// Only IN-STOCK items go into the grid (same rule as before) - and since the
+// grid already shows each one's name/price/discount, there is nothing left
+// for the text to usefully repeat per item. bestPct is just enough real
+// substance for the one summary sentence below.
 const ids = [];
-for (const { p, price, was, pct } of discounted) {
-  const stock = p.in_stock ? ('IN STOCK (' + (Number(p.current_stock) || 0) + ' left)') : 'OUT OF STOCK';
-  const size = p.custom_size ? ' ' + String(p.custom_size) : '';
-  lines.push('- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + taka(price) + ' (was ' + taka(was) + ', -' + pct + '%) | ' + stock);
-  if (p.in_stock) ids.push(p.id);
+let bestPct = 0;
+for (const { p, pct } of discounted) {
+  if (p.in_stock) {
+    ids.push(p.id);
+    if (pct > bestPct) bestPct = pct;
+  }
 }
 
-if (!dealCards.length && !lines.length) {
+if (!dealCards.length && !ids.length) {
   return [{ json: { text: 'No active flash sales, combo offers or discounted products right now - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
 }
 
-// The intro line adapts to what's actually present so it never dangles a
-// colon with nothing under it, and never promises deal details that only
-// live in the cards block.
+// A real sentence, not a bare label - the grid/cards below already show every
+// name and price, so this adds the one thing they can't: a plain-language
+// summary of what's actually on offer right now.
 let intro;
-if (dealCards.length && lines.length) {
-  intro = "Here are our current flash sales and combo deals, plus a few discounted products:\\n" + lines.join('\\n');
+if (dealCards.length && ids.length) {
+  intro = "We've got some great deals running right now - check out the flash sales and combo offers above, plus " + ids.length + ' product' + (ids.length === 1 ? '' : 's') + ' currently discounted up to ' + bestPct + '% off!';
 } else if (dealCards.length) {
-  intro = 'Here are our current flash sales and combo deals!';
+  intro = "We've got some great flash sales and combo offers running right now - take a look above!";
 } else {
-  intro = "Here's what's on offer right now:\\n" + lines.join('\\n');
+  intro = 'Right now ' + ids.length + ' product' + (ids.length === 1 ? ' is' : 's are') + ' discounted up to ' + bestPct + '% off - check them out above!';
 }
 
 const dealCardsFooter = dealCards.length
