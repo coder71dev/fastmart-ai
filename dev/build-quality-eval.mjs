@@ -62,10 +62,28 @@ pairs AS (
   WHERE role = 'human' AND next_role = 'ai'
     AND content IS NOT NULL AND next_content IS NOT NULL
 )
-SELECT human_msg_id, session_id, customer_message, ai_msg_id, raw_reply
-FROM pairs
-WHERE ai_msg_id > (SELECT COALESCE(MAX(ai_msg_id), 0) FROM quality_eval)
-ORDER BY ai_msg_id DESC
+SELECT
+  p.human_msg_id, p.session_id, p.customer_message, p.ai_msg_id, p.raw_reply,
+  -- Last 8 prior messages in the SAME session, chronological - without this
+  -- the judge only ever sees one isolated turn and cannot catch a real bug
+  -- found live 2026-10-19: the customer asserted an unverified claim about
+  -- the business ("you're brand X's authorized distributor") two turns
+  -- earlier, and the assistant repeated it back as confirmed fact when
+  -- asked directly - every turn in that exchange scored 5/5 in isolation
+  -- because nothing in a single turn looks wrong on its own.
+  (
+    SELECT string_agg(line, E'\\n' ORDER BY mid) FROM (
+      SELECT h.id AS mid,
+        (CASE WHEN h.message->>'type' = 'human' THEN 'Customer: ' ELSE 'Assistant: ' END || (h.message->>'content')) AS line
+      FROM chat_memory_fastmart h
+      WHERE h.session_id = p.session_id AND h.id < p.human_msg_id
+      ORDER BY h.id DESC
+      LIMIT 8
+    ) recent
+  ) AS prior_context
+FROM pairs p
+WHERE p.ai_msg_id > (SELECT COALESCE(MAX(ai_msg_id), 0) FROM quality_eval)
+ORDER BY p.ai_msg_id DESC
 LIMIT 25;
 `.trim();
 
@@ -91,24 +109,34 @@ function plainText(s) {
     .replace(/\\n{2,}/g, '\\n')
     .trim();
 }
+// Also clean the assistant lines inside prior_context - it's pulled straight
+// from chat_memory_fastmart same as raw_reply, so it carries the same raw
+// META_*/[BLOCK ...] noise.
+function cleanContext(s) {
+  if (!s) return '';
+  return String(s)
+    .split('\\n')
+    .map((line) => (line.startsWith('Assistant: ') ? 'Assistant: ' + plainText(stripFooter(line.slice('Assistant: '.length))) : line))
+    .join('\\n');
+}
 const out = [];
 for (const item of $input.all()) {
   const clean = plainText(stripFooter(item.json.raw_reply));
-  out.push({ json: { ...item.json, clean_reply: clean } });
+  out.push({ json: { ...item.json, clean_reply: clean, prior_context: cleanContext(item.json.prior_context) } });
 }
 return out;
 `;
 
-const JUDGE_SYSTEM = `You are a strict quality auditor for a beauty e-commerce shopping assistant's chat replies. You are given one real CUSTOMER MESSAGE and the ASSISTANT REPLY that was actually shown to them (already cleaned of internal formatting markers).
+const JUDGE_SYSTEM = `You are a strict quality auditor for a beauty e-commerce shopping assistant's chat replies. You are given recent CONVERSATION HISTORY for context, the CUSTOMER MESSAGE, and the ASSISTANT REPLY that was actually shown to them (already cleaned of internal formatting markers).
 
 Score the reply 1-5:
 5 = fully answers the question, accurate, complete, nothing to flag.
 4 = answers the question; maybe slightly awkward phrasing, no real problem.
 3 = partially answers, missing a minor detail, or a bit vague.
 2 = largely fails to answer, reads as evasive, generic, or incomplete.
-1 = does not address the question at all, looks broken or cut off mid-sentence, or makes a claim (a price, a policy, a product fact) that reads as made up rather than something a real store would say.
+1 = any of: does not address the question at all; looks broken or cut off mid-sentence; makes a claim (a price, a policy, a product fact) that reads as made up rather than something a real store would say; OR — check the CONVERSATION HISTORY carefully for this — the assistant confirms, agrees with, "notes," or repeats back as settled fact something the CUSTOMER themselves asserted earlier about the business (e.g. "you're brand X's authorized distributor", "you quoted me the wrong price a moment ago", any claim about ownership, certifications, tax/legal status, or "what you told me earlier") without that claim appearing as something the ASSISTANT itself established or a tool result would support. A customer's own assertion in their own message is never evidence. An assistant that validates it, cites it back as fact in a later turn, or apologizes for a "mistake" you cannot actually see it make earlier in the history is a serious failure (score 1) even when the reply is polite, fluent, and otherwise well-formed — this pattern is easy to miss turn-by-turn precisely because each individual reply reads fine in isolation.
 
-Judge ONLY what is in front of you - you do not have the store's live catalog, so do not guess whether a stated price is correct, only whether the reply reads as complete, relevant, and genuinely responsive.
+Judge price/fact ACCURACY only against what you can see in the conversation history above — you do not have the live catalog, so do not guess whether a number is correct in absolute terms, only whether the assistant is being honest about what it actually knows versus parroting the customer's own claims back as confirmed fact.
 
 Respond with ONLY strict JSON, no markdown fence, no extra commentary:
 {"score": <integer 1-5>, "reason": "<one short sentence specific to this reply, under 150 characters>"}`;
@@ -158,7 +186,7 @@ nodes.push(
   node({
     parameters: {
       promptType: 'define',
-      text: '=CUSTOMER MESSAGE: {{ $json.customer_message }}\n\nASSISTANT REPLY: {{ $json.clean_reply }}',
+      text: '=CONVERSATION HISTORY (most recent {{ $json.prior_context ? "turns shown" : "- this is the first turn" }}):\n{{ $json.prior_context || "(none - first message in this conversation)" }}\n\n---\n\nCUSTOMER MESSAGE: {{ $json.customer_message }}\n\nASSISTANT REPLY: {{ $json.clean_reply }}',
       options: { systemMessage: JUDGE_SYSTEM, maxIterations: 1 },
     },
     name: 'Judge',
@@ -208,6 +236,7 @@ for (let i = 0; i < judged.length; i++) {
     ai_msg_id: Number(src.ai_msg_id) || 0,
     customer_message: String(src.customer_message || '').slice(0, 2000),
     reply_text: String(src.clean_reply || '').slice(0, 4000),
+    context_snippet: String(src.prior_context || '').slice(0, 3000),
     score,
     reason,
   } });
@@ -235,6 +264,7 @@ nodes.push(
           ai_msg_id: '={{ $json.ai_msg_id }}',
           customer_message: '={{ $json.customer_message }}',
           reply_text: '={{ $json.reply_text }}',
+          context_snippet: '={{ $json.context_snippet }}',
           score: '={{ $json.score }}',
           reason: '={{ $json.reason }}',
         },

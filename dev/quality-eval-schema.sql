@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS quality_eval (
   ai_msg_id INTEGER NOT NULL UNIQUE, -- dedup key: chat_memory_fastmart has no timestamp column
   customer_message TEXT NOT NULL,
   reply_text TEXT NOT NULL,          -- cleaned of META_*/[BLOCK ...] markers, see dev/build-quality-eval.mjs's CLEAN_CODE
+  context_snippet TEXT NOT NULL DEFAULT '', -- last ~8 prior turns the judge saw - added after a real miss (2026-10-19): a sycophancy bug only shows up across turns, invisible to a judge looking at one isolated reply
   score INTEGER NOT NULL,            -- 1-5 from the judge LLM, see JUDGE_SYSTEM in dev/build-quality-eval.mjs
   reason TEXT NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'new', -- new | reviewed | dismissed (dev/review-flags.mjs)

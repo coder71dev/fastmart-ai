@@ -12,6 +12,7 @@
 //   node dev/review-flags.mjs --stats              just the score distribution
 //   node dev/review-flags.mjs --mark-reviewed 123  mark a row handled (keeps the record)
 //   node dev/review-flags.mjs --dismiss 123        mark a row as noise (judge was wrong)
+//   node dev/review-flags.mjs --context 123        show one row's full prior-turn context the judge saw
 import { spawnSync } from 'node:child_process';
 
 const ARGS = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => (a.startsWith('--') ? [a.slice(2), arr[i + 1]?.startsWith('--') ? true : (arr[i + 1] ?? true)] : null)).filter(Boolean));
@@ -38,6 +39,20 @@ if (ARGS['mark-reviewed']) {
 if (ARGS.dismiss) {
   const id = Number(ARGS.dismiss);
   console.log(psqlExec(`UPDATE quality_eval SET status = 'dismissed' WHERE id = ${id};`));
+  process.exit(0);
+}
+if (ARGS.context) {
+  const id = Number(ARGS.context);
+  const rows = psqlJson(`SELECT json_agg(t) FROM (SELECT id, session_id, customer_message, reply_text, context_snippet, score, reason FROM quality_eval WHERE id = ${id}) t;`);
+  if (!rows.length) { console.log(`no row #${id}`); process.exit(0); }
+  const r = rows[0];
+  console.log(`#${r.id}  score=${r.score}  session=${r.session_id}\n`);
+  console.log('--- CONVERSATION BEFORE THIS TURN (what the judge saw) ---');
+  console.log(r.context_snippet || '(none - first message in this conversation)');
+  console.log('\n--- THIS TURN ---');
+  console.log(`Customer: ${r.customer_message}`);
+  console.log(`Assistant: ${r.reply_text}`);
+  console.log(`\njudge: ${r.reason}`);
   process.exit(0);
 }
 if (ARGS.stats) {
