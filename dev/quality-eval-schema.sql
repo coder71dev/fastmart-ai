@@ -19,9 +19,9 @@ CREATE TABLE IF NOT EXISTS quality_eval (
   customer_message TEXT NOT NULL,
   reply_text TEXT NOT NULL,          -- cleaned of META_*/[BLOCK ...] markers, see dev/build-quality-eval.mjs's CLEAN_CODE
   context_snippet TEXT NOT NULL DEFAULT '', -- last ~8 prior turns the judge saw - added after a real miss (2026-10-19): a sycophancy bug only shows up across turns, invisible to a judge looking at one isolated reply
-  score INTEGER NOT NULL,            -- 1-5 from the judge LLM, see JUDGE_SYSTEM in dev/build-quality-eval.mjs
+  score INTEGER,                     -- 1-5 from the judge LLM (see JUDGE_SYSTEM), NULL for status='skipped' rows never sent to the judge at all
   reason TEXT NOT NULL,
-  status VARCHAR(20) NOT NULL DEFAULT 'new', -- new | reviewed | dismissed (dev/review-flags.mjs) | drafted (dev/draft-eval-cases.mjs)
+  status VARCHAR(20) NOT NULL DEFAULT 'new', -- new | reviewed | dismissed (dev/review-flags.mjs) | drafted (dev/draft-eval-cases.mjs) | skipped (variant-picker/approval turns - not evaluable from text alone, see CLEAN_CODE)
   evaluated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS quality_eval_status_score_idx ON quality_eval (status, score);

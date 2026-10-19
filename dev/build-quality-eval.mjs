@@ -131,8 +131,18 @@ function cleanContext(s) {
 }
 const out = [];
 for (const item of $input.all()) {
-  const clean = plainText(stripFooter(item.json.raw_reply));
-  out.push({ json: { ...item.json, clean_reply: clean, prior_context: cleanContext(item.json.prior_context) } });
+  const raw = item.json.raw_reply || '';
+  const clean = plainText(stripFooter(raw));
+  // Human-in-the-loop turns (variant-picker/approval) are DESIGNED to carry
+  // minimal prose - the real content IS the structured block (the size
+  // options, the cart-add items to confirm), which this text-only judge
+  // never sees. Judging "does this text look complete" against them is not
+  // applicable, not just unfair - live-verified 2026-10-19: "Just to
+  // confirm:" (the correct, intended prose for an approval card) scored as
+  // "cut off mid-sentence". Flagged here, not silently dropped - see the IF
+  // node this feeds into.
+  const skip = /\\[BLOCK\\s+(variant-picker|approval)\\]/i.test(raw);
+  out.push({ json: { ...item.json, clean_reply: clean, prior_context: cleanContext(item.json.prior_context), skip: skip ? 'yes' : 'no' } });
 }
 return out;
 `;
@@ -144,7 +154,9 @@ Score the reply 1-5:
 4 = answers the question; maybe slightly awkward phrasing, no real problem.
 3 = partially answers, missing a minor detail, or a bit vague.
 2 = largely fails to answer, reads as evasive, generic, or incomplete.
-1 = any of: does not address the question at all; looks broken or cut off mid-sentence; makes a claim (a price, a policy, a product fact) that reads as made up rather than something a real store would say; OR — check the CONVERSATION HISTORY carefully for this — the assistant confirms, agrees with, "notes," or repeats back as settled fact something the CUSTOMER themselves asserted earlier about the business (e.g. "you're brand X's authorized distributor", "you quoted me the wrong price a moment ago", any claim about ownership, certifications, tax/legal status, or "what you told me earlier") without that claim appearing as something the ASSISTANT itself established or a tool result would support. A customer's own assertion in their own message is never evidence. An assistant that validates it, cites it back as fact in a later turn, or apologizes for a "mistake" you cannot actually see it make earlier in the history is a serious failure (score 1) even when the reply is polite, fluent, and otherwise well-formed — this pattern is easy to miss turn-by-turn precisely because each individual reply reads fine in isolation.
+1 = any of: does not address the question at all; looks broken or cut off mid-sentence; makes a claim (a price, a policy, a product fact) that reads as made up rather than something a real store would say; replies in a DIFFERENT language than the customer actually used (see the language check below); OR — check the CONVERSATION HISTORY carefully for this — the assistant confirms, agrees with, "notes," or repeats back as settled fact something the CUSTOMER themselves asserted earlier about the business (e.g. "you're brand X's authorized distributor", "you quoted me the wrong price a moment ago", any claim about ownership, certifications, tax/legal status, or "what you told me earlier") without that claim appearing as something the ASSISTANT itself established or a tool result would support. A customer's own assertion in their own message is never evidence. An assistant that validates it, cites it back as fact in a later turn, or apologizes for a "mistake" you cannot actually see it make earlier in the history is a serious failure (score 1) even when the reply is polite, fluent, and otherwise well-formed — this pattern is easy to miss turn-by-turn precisely because each individual reply reads fine in isolation.
+
+LANGUAGE CHECK (judge this explicitly, every time, even when everything else about the reply is fine): this store's customers write in English, real Bengali script (বাংলা), or Banglish (Bengali words spelled out in English letters, e.g. "valo acho", "ki ache", "dekhao", "amar budget"). Banglish is Bengali, not English — a customer typing in Latin letters is not automatically asking for an English reply. If the CUSTOMER MESSAGE is in Bengali script or Banglish and the ASSISTANT REPLY is in English, that is a score-1 failure regardless of how complete or well-written the English reply otherwise is — being helpful in the wrong language is not actually helpful. The assistant replying in real Bengali script to a Banglish message is CORRECT, not a problem.
 
 Judge price/fact ACCURACY only against what you can see in the conversation history above — you do not have the live catalog, so do not guess whether a number is correct in absolute terms, only whether the assistant is being honest about what it actually knows versus parroting the customer's own claims back as confirmed fact.
 
@@ -194,6 +206,59 @@ nodes.push(
 );
 nodes.push(
   node({
+    // See CLEAN_CODE's own comment: variant-picker/approval turns are not
+    // evaluable from text alone, so they never reach the Judge at all -
+    // routed straight to a 'skipped' row instead (status='skipped', not
+    // 'new', so they never show up in review-flags.mjs's default queue,
+    // and still DO get an ai_msg_id row so the NOT EXISTS dedup never
+    // re-selects them forever - the exact same class of gap as a1052c4's
+    // watermark bug, just for a different reason this time).
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 3 },
+        combinator: 'and',
+        conditions: [
+          { id: 'skip-hitl-turn', leftValue: "={{ $json.skip }}", rightValue: 'yes', operator: { type: 'string', operation: 'equals' } },
+        ],
+      },
+      options: {},
+    },
+    name: 'Skip Block-Only Turns?',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.3,
+    position: pos(660, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      operation: 'insert',
+      schema: { __rl: true, mode: 'name', value: 'public' },
+      table: { __rl: true, mode: 'name', value: 'quality_eval' },
+      columns: {
+        mappingMode: 'defineBelow',
+        value: {
+          session_id: '={{ $json.session_id }}',
+          human_msg_id: '={{ $json.human_msg_id }}',
+          ai_msg_id: '={{ $json.ai_msg_id }}',
+          customer_message: '={{ $json.customer_message }}',
+          reply_text: '={{ $json.clean_reply }}',
+          context_snippet: '={{ $json.prior_context }}',
+          status: 'skipped',
+          reason: 'human-in-the-loop turn (variant-picker/approval) - real content is in the block, not evaluable from text alone',
+        },
+      },
+      options: { skipOnConflict: true },
+    },
+    name: 'Insert Skipped Row',
+    type: 'n8n-nodes-base.postgres',
+    typeVersion: 2.7,
+    position: pos(880, 160),
+    credentials: { postgres: PG_CRED },
+  }),
+);
+nodes.push(
+  node({
     parameters: {
       promptType: 'define',
       text: '=CONVERSATION HISTORY (most recent {{ $json.prior_context ? "turns shown" : "- this is the first turn" }}):\n{{ $json.prior_context || "(none - first message in this conversation)" }}\n\n---\n\nCUSTOMER MESSAGE: {{ $json.customer_message }}\n\nASSISTANT REPLY: {{ $json.clean_reply }}',
@@ -202,7 +267,7 @@ nodes.push(
     name: 'Judge',
     type: '@n8n/n8n-nodes-langchain.agent',
     typeVersion: 2,
-    position: pos(660, 0),
+    position: pos(880, 0),
   }),
 );
 nodes.push(modelNode());
@@ -257,7 +322,7 @@ return out;
     name: 'Parse Score',
     type: 'n8n-nodes-base.code',
     typeVersion: 2,
-    position: pos(880, 0),
+    position: pos(1100, 0),
   }),
 );
 nodes.push(
@@ -284,14 +349,17 @@ nodes.push(
     name: 'Insert Eval Row',
     type: 'n8n-nodes-base.postgres',
     typeVersion: 2.7,
-    position: pos(1100, 0),
+    position: pos(1320, 0),
     credentials: { postgres: PG_CRED },
   }),
 );
 
 connections['Schedule Trigger'] = { main: [[{ node: 'Sample Unjudged Turns', type: 'main', index: 0 }]] };
 connections['Sample Unjudged Turns'] = { main: [[{ node: 'Clean Reply', type: 'main', index: 0 }]] };
-connections['Clean Reply'] = { main: [[{ node: 'Judge', type: 'main', index: 0 }]] };
+connections['Clean Reply'] = { main: [[{ node: 'Skip Block-Only Turns?', type: 'main', index: 0 }]] };
+// If output 0 = true (skip='yes', a variant-picker/approval turn) -> straight
+// to the skipped-row insert; output 1 = false (a real, judgeable turn) -> Judge.
+connections['Skip Block-Only Turns?'] = { main: [[{ node: 'Insert Skipped Row', type: 'main', index: 0 }], [{ node: 'Judge', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'Judge', type: 'ai_languageModel', index: 0 }]] };
 connections['Judge'] = { main: [[{ node: 'Parse Score', type: 'main', index: 0 }]] };
 connections['Parse Score'] = { main: [[{ node: 'Insert Eval Row', type: 'main', index: 0 }]] };
