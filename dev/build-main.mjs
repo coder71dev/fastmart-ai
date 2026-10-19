@@ -340,6 +340,7 @@ function stripFooter(s) {
     .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
     .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_INFO_CARDS_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
     .replace(/META_PROFILE_ASK:[^\\n]*\\n?/gi, '')
     .trim();
@@ -567,6 +568,14 @@ try {
   const cm = replyTxt.match(/META_COMPARISON_JSON:\\s*(\\{.*\\})/i);
   if (cm) { try { comparisonMeta = JSON.parse(cm[1]); } catch (e) {} }
 } catch {}
+// The offers tool composes this itself (deterministic, same pattern as
+// META_ORDER_JSON) - the orchestrator is told to pass it through verbatim,
+// never author its own cards.
+let infoCardsMeta = null;
+try {
+  const icm = replyTxt.match(/META_INFO_CARDS_JSON:\\s*(\\{.*\\})/i);
+  if (icm) { try { infoCardsMeta = JSON.parse(icm[1]); } catch (e) {} }
+} catch {}
 // Guided-move chips the orchestrator authors itself, grounded in this turn
 // (dev/prompts.js "SUGGESTED NEXT STEPS") - replaces the widget's old
 // context-blind fallback (any product-grid always got the same canned
@@ -669,12 +678,27 @@ if (offersObsText) {
     replyTxt = replyTxt.trim() + '\\n\\nAlso currently running:\\n' + missing.map((l) => '• ' + l.trim()).join('\\n');
   }
 }
+// Same intermittent-drop risk as the text lines above applies to the marker
+// itself - fall back to the raw tool observation (ground truth) whenever the
+// model's own reply didn't carry a parseable META_INFO_CARDS_JSON, so the
+// deal cards don't silently vanish the same way the text lines used to.
+if (!infoCardsMeta && offersObsText) {
+  const icm2 = offersObsText.match(/META_INFO_CARDS_JSON:\\s*(\\{.*\\})/i);
+  if (icm2) { try { infoCardsMeta = JSON.parse(icm2[1]); } catch (e) {} }
+}
 const doGrid = wantsGrid || wantsGridObs;
 const doCart = wantsCart || wantsCartObs || cartAddRan;
 const doCheckout = wantsCheckout || wantsCheckoutObs;
 const doOrder = wantsOrder || wantsOrderObs || !!orderMeta;
 const blocks = [];
 if (doOrder && orderMeta) blocks.push({ type: 'order-status', order: orderMeta });
+if (infoCardsMeta && Array.isArray(infoCardsMeta.cards)) {
+  const cards = infoCardsMeta.cards
+    .map((c) => ({ icon: String((c && c.icon) || '').trim(), title: String((c && c.title) || '').trim(), body: String((c && c.body) || '').trim() }))
+    .filter((c) => c.title)
+    .slice(0, 6);
+  if (cards.length) blocks.push({ type: 'info-cards', cards });
+}
 if (doGrid && !wantsComparison && ids.length) {
   try {
     const cards = [];

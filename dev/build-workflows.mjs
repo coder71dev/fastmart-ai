@@ -595,16 +595,26 @@ const combos = comboParsed && Array.isArray(comboParsed.data) ? comboParsed.data
 const discRaw = discParsed && Array.isArray(discParsed.data) ? discParsed.data : [];
 
 const lines = [];
+// dealCards mirrors the same FLASH SALE/COMBO OFFER lines as structured data
+// for an [BLOCK info-cards] - the orchestrator passes this through verbatim
+// the same way it already does for META_PRODUCT_IDS/[BLOCK product-grid]
+// below, so the widget can render deal cards instead of (or alongside) the
+// plain bullet lines.
+const dealCards = [];
 for (const d of flashDeals.slice(0, 3)) {
   const left = daysLeft(d && d.date);
   const title = String((d && (d.title || d.subtitle)) || 'Flash Sale').trim();
+  const endTxt = left ? 'Ends in ' + left + ' day' + (left === 1 ? '' : 's') : 'Limited time';
   lines.push('FLASH SALE: ' + title + (left ? ' - ends in ' + left + ' day' + (left === 1 ? '' : 's') : ''));
+  dealCards.push({ icon: '\u{1F525}', title, body: endTxt });
 }
 for (const c of combos.slice(0, 3)) {
   const left = daysLeft(c && c.end_date);
   const name = String((c && (c.combo_name || c.offer_title)) || 'Combo Offer').trim();
   const cnt = Number(c && c.products_count) || 0;
-  lines.push('COMBO OFFER: ' + name + ' - ' + taka(c && c.combo_price) + (cnt ? ' for ' + cnt + ' items' : '') + (left ? ', ends in ' + left + ' day' + (left === 1 ? '' : 's') : ''));
+  const body = taka(c && c.combo_price) + (cnt ? ' for ' + cnt + ' items' : '') + (left ? ', ends in ' + left + ' day' + (left === 1 ? '' : 's') : '');
+  lines.push('COMBO OFFER: ' + name + ' - ' + body);
+  dealCards.push({ icon: '\u{1F381}', title: name, body });
 }
 
 // Biggest real savings first - that is what "current offers" means to a customer,
@@ -628,7 +638,10 @@ if (!lines.length) {
   return [{ json: { text: 'No active flash sales, combo offers or discounted products right now - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
 }
 
-const text = "Here's what's on offer right now:\\n" + lines.join('\\n') +
+const dealCardsFooter = dealCards.length
+  ? ('\\nMETA_INFO_CARDS_JSON: ' + JSON.stringify({ cards: dealCards }) + '\\n[BLOCK info-cards]')
+  : '';
+const text = "Here's what's on offer right now:\\n" + lines.join('\\n') + dealCardsFooter +
   (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.slice(0, 6).join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
 return [{ json: { text } }];
 `;
