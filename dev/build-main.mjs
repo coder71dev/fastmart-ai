@@ -842,8 +842,21 @@ out.suggestions = (wantsVariant || wantsApproval || doCheckout || wantsProfileAs
 // turn) and when the reply already ends with a question mark (the model
 // asked something itself - a second question right after would read oddly).
 if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !/[?\uff1f]\\s*$/.test(replyTxt.trim())) {
-  const joinFields = (arr) => (arr.length === 1 ? arr[0] : (arr.length === 2 ? arr[0] + ' and ' + arr[1] : arr.slice(0, -1).join(', ') + ', and ' + arr[arr.length - 1]));
-  replyTxt = replyTxt.trim() + '\\nWhat is your ' + joinFields(profileAsk) + ', so I can narrow this down further for you?';
+  const joinFields = (arr, and) => (arr.length === 1 ? arr[0] : (arr.length === 2 ? arr[0] + and + arr[1] : arr.slice(0, -1).join(', ') + ',' + and + arr[arr.length - 1]));
+  // Appending a hardcoded ENGLISH question onto an otherwise-Bengali reply was
+  // its own live bug (2026-10-19, alongside the Banglish-answered-in-English
+  // one the prompt fix above addresses) - detect Bengali the same cheap way
+  // the currency-mojibake guard elsewhere in this file does (a script check on
+  // what the model actually wrote), since after that prompt fix a Bengali- or
+  // Banglish-asked turn always comes back in real Bengali script, never
+  // Banglish itself - so this is a reliable signal, not a guess.
+  if (/[\\u0980-\\u09FF]/.test(replyTxt)) {
+    const bnLabel = { 'skin type': '\u09b8\u09cd\u0995\u09bf\u09a8 \u099f\u09be\u0987\u09aa', concern: '\u0995\u09a8\u09b8\u09be\u09b0\u09cd\u09a8', budget: '\u09ac\u09be\u099c\u09c7\u099f' };
+    const bnFields = profileAsk.map((f) => bnLabel[f] || f);
+    replyTxt = replyTxt.trim() + '\\n\u0986\u09aa\u09a8\u09be\u09b0 ' + joinFields(bnFields, ' \u098f\u09ac\u0982 ') + ' \u0995\u09c0, \u09af\u09be\u09a4\u09c7 \u0986\u09ae\u09bf \u098f\u099f\u09bf \u0986\u09b0\u0993 \u09ad\u09be\u09b2\u09cb\u09ad\u09be\u09ac\u09c7 \u09ac\u09c7\u099b\u09c7 \u09a6\u09bf\u09a4\u09c7 \u09aa\u09be\u09b0\u09bf?';
+  } else {
+    replyTxt = replyTxt.trim() + '\\nWhat is your ' + joinFields(profileAsk, ' and ') + ', so I can narrow this down further for you?';
+  }
 }
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
