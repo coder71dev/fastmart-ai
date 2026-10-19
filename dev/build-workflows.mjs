@@ -518,17 +518,14 @@ function daysLeft(unixSeconds) {
   return Math.ceil(ms / 86400000);
 }
 
-// A product line in the exact style used everywhere else in this tool and in
-// SEARCH_CODE - shared so the deal-scoped branch below and the general
-// discounted-products section stay visually consistent.
-function fmtProductLine(p) {
+// Just enough per-product metadata to build the ids/summary below - the
+// product-grid block (re-fetched live in build-main.mjs) is what actually
+// shows each name/price/stock, so this never formats a display line anymore.
+function fmtProductMeta(p) {
   const price = num(p.nonformated_price) || num(p.main_price) || num(p.web_price);
   const was = num(p.stroked_price);
   const pct = (was > price && was > 0) ? Math.round((1 - price / was) * 100) : 0;
-  const stock = p.in_stock ? ('IN STOCK (' + (Number(p.current_stock) || 0) + ' left)') : 'OUT OF STOCK';
-  const size = p.custom_size ? ' ' + String(p.custom_size) : '';
-  const priceTxt = pct > 0 ? (taka(price) + ' (was ' + taka(was) + ', -' + pct + '%)') : taka(price);
-  return { id: Number(p.id) || 0, inStock: !!p.in_stock, line: '- id=' + p.id + ' | ' + String(p.name ?? '').trim() + size + ' | ' + priceTxt + ' | ' + stock };
+  return { id: Number(p.id) || 0, inStock: !!p.in_stock, pct };
 }
 
 // The customer named a SPECIFIC flash deal ("show products from the K-Beauty
@@ -567,11 +564,19 @@ if (dealQuery) {
     return [{ json: { text: 'The ' + match.title + ' flash sale is running right now but has no products listed yet - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
   }
   const left = daysLeft(match.date);
-  const rows = prodArr.slice(0, 12).map(fmtProductLine);
-  const ids = rows.filter((r) => r.inStock).map((r) => r.id).slice(0, 6);
-  const text = "Here's what's currently in " + match.title + (left ? ' (ends in ' + left + ' day' + (left === 1 ? '' : 's') + ')' : '') + ":\\n" +
-    rows.map((r) => r.line).join('\\n') +
-    (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
+  const rows = prodArr.slice(0, 12).map(fmtProductMeta);
+  // Cap at 5, not 6 - build-main.mjs's generic META_PRODUCT_IDS parser caps
+  // every tool's ids at 5 before re-fetching the grid, so promising a 6th
+  // product in the text here would silently never render as a card.
+  const shown = rows.filter((r) => r.inStock).slice(0, 5);
+  const ids = shown.map((r) => r.id);
+  if (!ids.length) {
+    return [{ json: { text: 'The ' + match.title + ' flash sale is running right now but everything in it is currently out of stock - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
+  }
+  const bestPct = shown.reduce((m, r) => Math.max(m, r.pct), 0);
+  const text = "Here's what's currently in " + match.title + (left ? ' (ends in ' + left + ' day' + (left === 1 ? '' : 's') + ')' : '') +
+    ' - ' + ids.length + ' product' + (ids.length === 1 ? '' : 's') + (bestPct > 0 ? ', up to ' + bestPct + '% off' : '') + ', check them out above!' +
+    '\\nMETA_PRODUCT_IDS: ' + ids.join(',') + '\\n[BLOCK product-grid]';
   return [{ json: { text } }];
 }
 
@@ -623,18 +628,15 @@ const discounted = discRaw.map((p) => {
   return { p, price, was, pct };
 }).filter((x) => x.pct > 0).sort((a, b) => b.pct - a.pct).slice(0, 6);
 
-// Only IN-STOCK items go into the grid (same rule as before) - and since the
-// grid already shows each one's name/price/discount, there is nothing left
-// for the text to usefully repeat per item. bestPct is just enough real
-// substance for the one summary sentence below.
-const ids = [];
-let bestPct = 0;
-for (const { p, pct } of discounted) {
-  if (p.in_stock) {
-    ids.push(p.id);
-    if (pct > bestPct) bestPct = pct;
-  }
-}
+// Only IN-STOCK items go into the grid (same rule as before), capped at 5 -
+// build-main.mjs's generic META_PRODUCT_IDS parser caps every tool's ids at
+// 5 before re-fetching the grid, so anything past that would never render as
+// a card even if quoted in the count below. bestPct is computed from this
+// same shown set, not the wider candidate pool, so the sentence never cites
+// a discount that isn't actually on a card above it.
+const shownDiscounted = discounted.filter((x) => x.p.in_stock).slice(0, 5);
+const ids = shownDiscounted.map((x) => x.p.id);
+const bestPct = shownDiscounted.reduce((m, x) => Math.max(m, x.pct), 0);
 
 if (!dealCards.length && !ids.length) {
   return [{ json: { text: 'No active flash sales, combo offers or discounted products right now - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
@@ -656,7 +658,7 @@ const dealCardsFooter = dealCards.length
   ? ('\\nMETA_INFO_CARDS_JSON: ' + JSON.stringify({ cards: dealCards }) + '\\n[BLOCK info-cards]')
   : '';
 const text = intro + dealCardsFooter +
-  (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.slice(0, 6).join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
+  (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
 return [{ json: { text } }];
 `;
 
