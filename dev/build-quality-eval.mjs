@@ -1,0 +1,268 @@
+// Builds the "quality-eval" workflow — stages 1-3 of the self-improving-loop
+// sketch (2026-10-19 conversation): sample real customer/assistant turns from
+// chat_memory_fastmart, score each with a judge LLM call, and write every
+// judged turn (not just the bad ones) into the quality_eval Postgres table.
+//
+// Deliberately NOT an n8n "Data Table" (that UI feature needs the owner's
+// real login to create via its REST API — out of reach for an automated
+// build step) — a plain Postgres table in the same fastmart_n8n DB that
+// chat_memory_fastmart already lives in, created once via:
+//   dev/quality-eval-schema.sql (see README / AGENTS.md for the runbook)
+// Reviewed with `node dev/review-flags.mjs`, not an n8n UI panel.
+//
+// This workflow NEVER touches dev/prompts.js or agent-chat — it only reads
+// chat_memory_fastmart (read-only) and writes to quality_eval. Flag-and-draft,
+// never auto-apply: nothing here can change what the live assistant says.
+//
+// Standalone, not part of sync.mjs's dependency chain (nothing depends on it,
+// it depends on nothing) - deploy directly:
+//   node dev/build-quality-eval.mjs && node dev/deploy.mjs dev/out/qualityEval.json
+// The PG_CRED / MODEL_NODE fallback ids below are correct for THIS instance
+// only, same caveat as build-main.mjs's own PG_CRED — if this ever needs to
+// deploy identically across instances, fold it into sync.mjs's existing
+// by-name credential resolution instead of trusting these literals.
+import fs from 'node:fs';
+import { MODEL_NODE, modelNodeFields } from './model-config.mjs';
+import { stableId } from './node-id.mjs';
+
+const OUT = 'dev/out';
+let credConfig = {};
+try { credConfig = JSON.parse(fs.readFileSync('.n8n-credentials.json', 'utf8')); } catch {}
+const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
+const PG_CRED_ID = process.env.PG_CRED_ID || credConfig.PG_CRED_ID || 'EsaKbJSqeQFEMuwd';
+const PG_CRED = { id: PG_CRED_ID, name: PG_CRED_NAME };
+
+const node = (o) => ({ id: o.id || stableId(o.name), disabled: false, ...o });
+const pos = (x, y) => [x, y];
+
+// Pairs each human turn with the NEXT ai turn in the same session (adjacent-
+// turn pairing - good enough since every real turn in this app is a strict
+// human-then-ai alternation) and only returns pairs newer than the last one
+// already scored (ai_msg_id is a real unique, monotonically increasing id -
+// chat_memory_fastmart has no timestamp column, so this is the dedup key,
+// not a time window). LIMIT keeps one run's judge-call cost bounded.
+const SAMPLE_SQL = `
+WITH ordered AS (
+  SELECT
+    id, session_id,
+    message->>'type' AS role,
+    message->>'content' AS content,
+    LEAD(id) OVER (PARTITION BY session_id ORDER BY id) AS next_id,
+    LEAD(message->>'type') OVER (PARTITION BY session_id ORDER BY id) AS next_role,
+    LEAD(message->>'content') OVER (PARTITION BY session_id ORDER BY id) AS next_content
+  FROM chat_memory_fastmart
+),
+pairs AS (
+  SELECT
+    id AS human_msg_id, session_id,
+    content AS customer_message,
+    next_id AS ai_msg_id,
+    next_content AS raw_reply
+  FROM ordered
+  WHERE role = 'human' AND next_role = 'ai'
+    AND content IS NOT NULL AND next_content IS NOT NULL
+)
+SELECT human_msg_id, session_id, customer_message, ai_msg_id, raw_reply
+FROM pairs
+WHERE ai_msg_id > (SELECT COALESCE(MAX(ai_msg_id), 0) FROM quality_eval)
+ORDER BY ai_msg_id DESC
+LIMIT 25;
+`.trim();
+
+// Strips the same META_*/[BLOCK ...] footer RESPONSE_CODE (dev/build-main.mjs)
+// strips before a reply ever reaches a real customer - the judge should score
+// what the customer actually saw, not the orchestrator's raw internal output
+// (chat_memory_fastmart stores the PRE-strip text, confirmed live 2026-10-19).
+const CLEAN_CODE = `
+function stripFooter(s) {
+  return String(s ?? '')
+    .replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '')
+    .replace(/META_ORDER_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
+    .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
+    .replace(/META_PROFILE_ASK:[^\\n]*\\n?/gi, '')
+    .trim();
+}
+function plainText(s) {
+  return String(s ?? '')
+    .replace(/\\[BLOCK[^\\]]*\\]/gi, '')
+    .replace(/\\n{2,}/g, '\\n')
+    .trim();
+}
+const out = [];
+for (const item of $input.all()) {
+  const clean = plainText(stripFooter(item.json.raw_reply));
+  out.push({ json: { ...item.json, clean_reply: clean } });
+}
+return out;
+`;
+
+const JUDGE_SYSTEM = `You are a strict quality auditor for a beauty e-commerce shopping assistant's chat replies. You are given one real CUSTOMER MESSAGE and the ASSISTANT REPLY that was actually shown to them (already cleaned of internal formatting markers).
+
+Score the reply 1-5:
+5 = fully answers the question, accurate, complete, nothing to flag.
+4 = answers the question; maybe slightly awkward phrasing, no real problem.
+3 = partially answers, missing a minor detail, or a bit vague.
+2 = largely fails to answer, reads as evasive, generic, or incomplete.
+1 = does not address the question at all, looks broken or cut off mid-sentence, or makes a claim (a price, a policy, a product fact) that reads as made up rather than something a real store would say.
+
+Judge ONLY what is in front of you - you do not have the store's live catalog, so do not guess whether a stated price is correct, only whether the reply reads as complete, relevant, and genuinely responsive.
+
+Respond with ONLY strict JSON, no markdown fence, no extra commentary:
+{"score": <integer 1-5>, "reason": "<one short sentence specific to this reply, under 150 characters>"}`;
+
+function modelNode() {
+  return node({ ...modelNodeFields(), position: pos(460, -200) });
+}
+
+const nodes = [];
+const connections = {};
+
+nodes.push(
+  node({
+    parameters: {
+      rule: { interval: [{ field: 'hours', hoursInterval: 1 }] },
+    },
+    name: 'Schedule Trigger',
+    type: 'n8n-nodes-base.scheduleTrigger',
+    typeVersion: 1.4,
+    position: pos(0, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      operation: 'executeQuery',
+      query: SAMPLE_SQL,
+      options: {},
+    },
+    name: 'Sample Unjudged Turns',
+    type: 'n8n-nodes-base.postgres',
+    typeVersion: 2.7,
+    position: pos(220, 0),
+    credentials: { postgres: PG_CRED },
+  }),
+);
+nodes.push(
+  node({
+    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: CLEAN_CODE },
+    name: 'Clean Reply',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(440, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      promptType: 'define',
+      text: '=CUSTOMER MESSAGE: {{ $json.customer_message }}\n\nASSISTANT REPLY: {{ $json.clean_reply }}',
+      options: { systemMessage: JUDGE_SYSTEM, maxIterations: 1 },
+    },
+    name: 'Judge',
+    type: '@n8n/n8n-nodes-langchain.agent',
+    typeVersion: 2,
+    position: pos(660, 0),
+  }),
+);
+nodes.push(modelNode());
+nodes.push(
+  node({
+    parameters: {
+      mode: 'runOnceForAllItems',
+      language: 'javaScript',
+      // Re-pairs each Judge output with its source row from Clean Reply by
+      // index - the AI Agent node's own output replaces $json entirely
+      // (same reason RESPONSE_CODE reads $('Prepare Input') by node
+      // reference rather than trusting what's still on $json after AI
+      // Agent runs), so the original human_msg_id/session_id/etc have to be
+      // pulled back in explicitly. A parse failure never drops the row
+      // (score defaults to 3, reason says so) - the point is every sampled
+      // turn gets permanently marked as judged so it is never re-sampled,
+      // even when the judge itself misbehaves.
+      jsCode: `
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{');
+  if (i < 0) return null;
+  try { return JSON.parse(s.slice(i)); } catch { return null; }
+}
+const judged = $input.all();
+const source = $('Clean Reply').all();
+const out = [];
+for (let i = 0; i < judged.length; i++) {
+  const src = source[i] ? source[i].json : {};
+  const raw = judged[i].json.output;
+  const parsed = firstJson(typeof raw === 'string' ? raw : JSON.stringify(raw ?? ''));
+  let score = Number(parsed && parsed.score);
+  if (!Number.isFinite(score)) score = 3;
+  score = Math.max(1, Math.min(5, Math.round(score)));
+  const reason = (parsed && typeof parsed.reason === 'string' && parsed.reason.trim())
+    ? parsed.reason.trim().slice(0, 200)
+    : 'judge output could not be parsed - needs manual check';
+  out.push({ json: {
+    session_id: String(src.session_id || ''),
+    human_msg_id: Number(src.human_msg_id) || 0,
+    ai_msg_id: Number(src.ai_msg_id) || 0,
+    customer_message: String(src.customer_message || '').slice(0, 2000),
+    reply_text: String(src.clean_reply || '').slice(0, 4000),
+    score,
+    reason,
+  } });
+}
+return out;
+`.trim(),
+    },
+    name: 'Parse Score',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(880, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      operation: 'insert',
+      schema: { __rl: true, mode: 'name', value: 'public' },
+      table: { __rl: true, mode: 'name', value: 'quality_eval' },
+      columns: {
+        mappingMode: 'defineBelow',
+        value: {
+          session_id: '={{ $json.session_id }}',
+          human_msg_id: '={{ $json.human_msg_id }}',
+          ai_msg_id: '={{ $json.ai_msg_id }}',
+          customer_message: '={{ $json.customer_message }}',
+          reply_text: '={{ $json.reply_text }}',
+          score: '={{ $json.score }}',
+          reason: '={{ $json.reason }}',
+        },
+      },
+      options: { skipOnConflict: true },
+    },
+    name: 'Insert Eval Row',
+    type: 'n8n-nodes-base.postgres',
+    typeVersion: 2.7,
+    position: pos(1100, 0),
+    credentials: { postgres: PG_CRED },
+  }),
+);
+
+connections['Schedule Trigger'] = { main: [[{ node: 'Sample Unjudged Turns', type: 'main', index: 0 }]] };
+connections['Sample Unjudged Turns'] = { main: [[{ node: 'Clean Reply', type: 'main', index: 0 }]] };
+connections['Clean Reply'] = { main: [[{ node: 'Judge', type: 'main', index: 0 }]] };
+connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'Judge', type: 'ai_languageModel', index: 0 }]] };
+connections['Judge'] = { main: [[{ node: 'Parse Score', type: 'main', index: 0 }]] };
+connections['Parse Score'] = { main: [[{ node: 'Insert Eval Row', type: 'main', index: 0 }]] };
+
+const wf = {
+  name: 'quality-eval (self-review sampler)',
+  nodes,
+  connections,
+  settings: { executionOrder: 'v1' },
+};
+fs.writeFileSync(`${OUT}/qualityEval.json`, JSON.stringify(wf, null, 2));
+console.log('built qualityEval.json');
+console.log('model:', MODEL_NODE.provider, '->', MODEL_NODE.model);
+console.log('pg cred:', PG_CRED.name, `(${PG_CRED.id})`);

@@ -193,6 +193,9 @@ exactly how both incidents in §2 happened.
 | `dev/eval-harness.mjs` | The real test suite — see §5 |
 | `dev/read-wf.mjs` | Prints what n8n actually has stored for a workflow (ground truth, not the built JSON) |
 | `dev/model-config.mjs` | Model/provider selection, see README's provider table |
+| `dev/build-quality-eval.mjs` | Builds the standalone `quality-eval` workflow — samples real `chat_memory_fastmart` turns hourly, scores each with an LLM judge, writes every judged turn to the `quality_eval` Postgres table. Flag-and-draft only: it never edits `dev/prompts.js` or `agent-chat`. First-time setup: run `dev/quality-eval-schema.sql` against the instance, then `node dev/build-quality-eval.mjs && ALLOW_NEW_WORKFLOW=1 node dev/deploy.mjs dev/out/qualityEval.json` (drop `ALLOW_NEW_WORKFLOW=1` for later redeploys). |
+| `dev/quality-eval-schema.sql` | The `quality_eval` table DDL — run once per instance, see the file's own header for the exact command |
+| `dev/review-flags.mjs` | The human review step for `quality_eval` — `--stats` for score breakdown, default view for new low-score rows, `--mark-reviewed <id>` / `--dismiss <id>` to action one |
 | `restore-n8n.ps1` | Restores a production DB dump into the local Docker stack for debugging — see §8, this is **not** a normal local-dev setup |
 | `perfecto-ai-demo.html` | Standalone single-file chat SPA — no build step, open directly or serve statically |
 | `WIDGET-CONTRACT.md` | The webhook request/response spec, kept up to date as the real contract changes |
