@@ -594,18 +594,16 @@ const flashDeals = flashParsed && Array.isArray(flashParsed.data) ? flashParsed.
 const combos = comboParsed && Array.isArray(comboParsed.data) ? comboParsed.data : [];
 const discRaw = discParsed && Array.isArray(discParsed.data) ? discParsed.data : [];
 
-const lines = [];
-// dealCards mirrors the same FLASH SALE/COMBO OFFER lines as structured data
-// for an [BLOCK info-cards] - the orchestrator passes this through verbatim
-// the same way it already does for META_PRODUCT_IDS/[BLOCK product-grid]
-// below, so the widget can render deal cards instead of (or alongside) the
-// plain bullet lines.
+// dealCards carries the FLASH SALE/COMBO OFFER data as structured info for
+// [BLOCK info-cards] ONLY - it is NOT also duplicated into the prose text
+// below. Cards already show title+body, so repeating "FLASH SALE: X - ends
+// in N days" as a bullet line too is pure redundancy; the orchestrator just
+// passes META_INFO_CARDS_JSON through (see dev/prompts.js's offers rule).
 const dealCards = [];
 for (const d of flashDeals.slice(0, 3)) {
   const left = daysLeft(d && d.date);
   const title = String((d && (d.title || d.subtitle)) || 'Flash Sale').trim();
   const endTxt = left ? 'Ends in ' + left + ' day' + (left === 1 ? '' : 's') : 'Limited time';
-  lines.push('FLASH SALE: ' + title + (left ? ' - ends in ' + left + ' day' + (left === 1 ? '' : 's') : ''));
   dealCards.push({ icon: '\u{1F525}', title, body: endTxt });
 }
 for (const c of combos.slice(0, 3)) {
@@ -613,9 +611,12 @@ for (const c of combos.slice(0, 3)) {
   const name = String((c && (c.combo_name || c.offer_title)) || 'Combo Offer').trim();
   const cnt = Number(c && c.products_count) || 0;
   const body = taka(c && c.combo_price) + (cnt ? ' for ' + cnt + ' items' : '') + (left ? ', ends in ' + left + ' day' + (left === 1 ? '' : 's') : '');
-  lines.push('COMBO OFFER: ' + name + ' - ' + body);
   dealCards.push({ icon: '\u{1F381}', title: name, body });
 }
+
+// lines now holds ONLY the discounted-product bullets - the deal names/dates
+// live solely in dealCards above.
+const lines = [];
 
 // Biggest real savings first - that is what "current offers" means to a customer,
 // not whatever random order the store API happened to return.
@@ -634,14 +635,26 @@ for (const { p, price, was, pct } of discounted) {
   if (p.in_stock) ids.push(p.id);
 }
 
-if (!lines.length) {
+if (!dealCards.length && !lines.length) {
   return [{ json: { text: 'No active flash sales, combo offers or discounted products right now - check back soon!\\nMETA_PRODUCT_IDS: none' } }];
+}
+
+// The intro line adapts to what's actually present so it never dangles a
+// colon with nothing under it, and never promises deal details that only
+// live in the cards block.
+let intro;
+if (dealCards.length && lines.length) {
+  intro = "Here are our current flash sales and combo deals, plus a few discounted products:\\n" + lines.join('\\n');
+} else if (dealCards.length) {
+  intro = 'Here are our current flash sales and combo deals!';
+} else {
+  intro = "Here's what's on offer right now:\\n" + lines.join('\\n');
 }
 
 const dealCardsFooter = dealCards.length
   ? ('\\nMETA_INFO_CARDS_JSON: ' + JSON.stringify({ cards: dealCards }) + '\\n[BLOCK info-cards]')
   : '';
-const text = "Here's what's on offer right now:\\n" + lines.join('\\n') + dealCardsFooter +
+const text = intro + dealCardsFooter +
   (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.slice(0, 6).join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
 return [{ json: { text } }];
 `;

@@ -618,9 +618,8 @@ let wantsOrderObs = false;
 let cartAddRan = false;
 let orderMeta = null;
 // Captures the current-offers tool's raw text when it's the general-summary
-// call (FLASH SALE:/COMBO OFFER: lines only appear on that branch, never on
-// the named-deal branch - see OFFERS_CODE) so the salvage below can compare
-// against it.
+// call (carries META_INFO_CARDS_JSON on that branch only - see OFFERS_CODE)
+// so the info-cards recovery below has the ground-truth source to fall back on.
 let offersObsText = '';
 try {
   const steps = $input.first().json.intermediateSteps || [];
@@ -636,7 +635,7 @@ try {
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
     if (/\\[BLOCK\\s+checkout\\]/i.test(s)) wantsCheckoutObs = true;
     if (/\\[BLOCK\\s+order-status\\]/i.test(s)) wantsOrderObs = true;
-    if (toolName === 'get_current_offers' && /FLASH SALE:|COMBO OFFER:/i.test(s)) offersObsText = s;
+    if (toolName === 'get_current_offers' && /META_INFO_CARDS_JSON:/i.test(s)) offersObsText = s;
     // The order specialist emits META_ORDER_JSON carrying the already-PII-free order payload.
     if (!orderMeta) orderMeta = orderMetaFrom(o);
     if (!ids.length) {
@@ -658,30 +657,14 @@ try {
     }
   }
 } catch {}
-// Deterministic backstop for the same intermittent-drop pattern as
-// stripRedundantProductLines below: live-verified 2026-10-15 - the model
-// dropped ALL THREE "FLASH SALE:" lines and every "COMBO OFFER:" line from
-// its reply roughly 1 in 4 tries, despite dev/prompts.js's explicit "every
-// FLASH SALE and COMBO OFFER line it returned must appear in your reply...
-// do not make it" instruction - while still correctly listing the plain
-// discounted products that came after them in the same tool text. Compare
-// the raw tool text (ground truth) against the reply and re-append whatever
-// is genuinely missing; matching on the deal/offer NAME (not the whole line)
-// tolerates the model's own light reformatting without double-posting it.
-if (offersObsText) {
-  const dealLines = offersObsText.split('\\n').filter((l) => /^(FLASH SALE|COMBO OFFER):/i.test(l.trim()));
-  const missing = dealLines.filter((l) => {
-    const name = l.replace(/^(FLASH SALE|COMBO OFFER):\\s*/i, '').split(/\\s+-\\s+/)[0].trim();
-    return name && !replyTxt.toLowerCase().includes(name.toLowerCase());
-  });
-  if (missing.length) {
-    replyTxt = replyTxt.trim() + '\\n\\nAlso currently running:\\n' + missing.map((l) => '• ' + l.trim()).join('\\n');
-  }
-}
-// Same intermittent-drop risk as the text lines above applies to the marker
-// itself - fall back to the raw tool observation (ground truth) whenever the
-// model's own reply didn't carry a parseable META_INFO_CARDS_JSON, so the
-// deal cards don't silently vanish the same way the text lines used to.
+// The deal names/dates now live ONLY in the info-cards block (see OFFERS_CODE
+// and the offers rule in dev/prompts.js) - the old backstop here that
+// re-appended "Also currently running: FLASH SALE: ..." text lines is gone on
+// purpose, since that text would now duplicate what the cards already show.
+// Same intermittent-drop risk the old text backstop guarded against still
+// applies to the marker itself - fall back to the raw tool observation
+// (ground truth) whenever the model's own reply didn't carry a parseable
+// META_INFO_CARDS_JSON, so the deal cards don't silently vanish.
 if (!infoCardsMeta && offersObsText) {
   const icm2 = offersObsText.match(/META_INFO_CARDS_JSON:\\s*(\\{.*\\})/i);
   if (icm2) { try { infoCardsMeta = JSON.parse(icm2[1]); } catch (e) {} }

@@ -84,6 +84,7 @@ async function storeCart(userId) {
 const cardsOf = (d) => d.blocks?.find((b) => b.type === 'product-grid' || b.type === 'product-carousel')?.products ?? [];
 const cartOf = (d) => d.blocks?.find((b) => b.type === 'cart-table');
 const checkoutOf = (d) => d.blocks?.find((b) => b.type === 'checkout');
+const infoCardsOf = (d) => d.blocks?.find((b) => b.type === 'info-cards')?.cards ?? [];
 
 function check(name, hard, fn) {
   return async () => {
@@ -358,9 +359,13 @@ battery.push(['asks for current offers gets a real answer, not a refusal', 'offe
 // rather than hardcoding one, then asks for its products specifically.
 battery.push(['named flash deal returns that deal\'s real products', 'offers', true, async () => {
   const general = await postChat({ message: 'show me flash deals' });
-  const m = (general.json?.reply ?? '').match(/FLASH SALE:\s*([^\n(–-]+)/i);
-  const dealName = m ? m[1].trim() : null;
-  if (!dealName) return { ok: false, detail: `no flash deal name found in general summary: ${(general.json?.reply ?? '').slice(0, 150)}` };
+  // Deal names live only in the info-cards block now (dev/build-workflows.mjs
+  // OFFERS_CODE no longer puts "FLASH SALE: ..." lines in the reply text
+  // itself - the cards block is the one source of truth, by design, so the
+  // reply doesn't repeat what the cards already show).
+  const flashCard = infoCardsOf(general.json).find((c) => c.icon === '\u{1F525}');
+  const dealName = flashCard ? String(flashCard.title ?? '').trim() : null;
+  if (!dealName) return { ok: false, detail: `no flash deal card found in general summary: ${(general.json?.reply ?? '').slice(0, 150)}` };
   const { json } = await postChat({ message: `show me products from the ${dealName} flash deal` });
   const cards = cardsOf(json);
   const r = json?.reply ?? '';
