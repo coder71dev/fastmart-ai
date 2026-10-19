@@ -82,8 +82,18 @@ SELECT
     ) recent
   ) AS prior_context
 FROM pairs p
-WHERE p.ai_msg_id > (SELECT COALESCE(MAX(ai_msg_id), 0) FROM quality_eval)
-ORDER BY p.ai_msg_id DESC
+-- NOT a ">MAX(ai_msg_id)" watermark on purpose: that was the bug (found live
+-- 2026-10-19, same session as the sycophancy one above). One run judged the
+-- newest 25 of a 34-pair backlog (DESC order), which pushed quality_eval's
+-- max past the 9 OLDEST pairs in that backlog - a real watermark check from
+-- then on, "> max", could never see them again even though they were never
+-- actually judged. 9 real turns (including a separate language bug the
+-- judge never got a chance to see) silently vanished from review forever.
+-- True set-difference has no such gap regardless of how LIMIT truncates a
+-- batch, and ASC (oldest-first) means a bounded backlog drains in order
+-- instead of a LIMIT-truncated newest-first batch starving the old end.
+WHERE NOT EXISTS (SELECT 1 FROM quality_eval q WHERE q.ai_msg_id = p.ai_msg_id)
+ORDER BY p.ai_msg_id ASC
 LIMIT 25;
 `.trim();
 
