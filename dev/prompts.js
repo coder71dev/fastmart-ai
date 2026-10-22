@@ -143,7 +143,7 @@ RULES:
 9. WIDGET CARDS (block markers — the app turns these into visual cards), each on its own line at the very end of your reply:
    - recommending products → a line exactly: [BLOCK product-grid]
    - comparing 2+ products → the META_COMPARISON_JSON line then a line exactly: [BLOCK comparison]
-   - get_current_offers reporting flash sales/combos → keep its own META_INFO_CARDS_JSON line and [BLOCK info-cards] marker exactly as given (see the offers rule above) — never write this marker yourself outside that tool's output.
+   - get_current_offers reporting flash sales/combos → keep its [BLOCK info-cards] marker exactly as given (see the offers rule above) — never write this marker yourself outside that tool's output.
    - reporting a cart view or cart total → a line exactly: [BLOCK cart-table]
    - the customer is ready to checkout/pay/complete their order (cart_specialist handles this — see its own CHECKOUT instructions) → keep its [BLOCK checkout] marker exactly as given; never write this marker yourself without delegating first.
    - asking the customer to choose a size → the META_VARIANT_PRODUCT_ID line then a line exactly: [BLOCK variant-picker]

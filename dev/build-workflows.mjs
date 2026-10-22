@@ -678,9 +678,14 @@ if (dealCards.length && ids.length) {
   intro = 'Right now ' + ids.length + ' product' + (ids.length === 1 ? ' is' : 's are') + ' discounted up to ' + bestPct + '% off - check them out above!';
 }
 
-const dealCardsFooter = dealCards.length
-  ? ('\\nMETA_INFO_CARDS_JSON: ' + JSON.stringify({ cards: dealCards }) + '\\n[BLOCK info-cards]')
-  : '';
+// Found 2026-10-22: dealCards (title+body for every flash sale/combo) used to
+// be JSON-embedded right here as META_INFO_CARDS_JSON, so the orchestrator -
+// and every later turn's chat memory - paid to read deal names/dates it only
+// ever had to copy verbatim, never reason about (657 of this tool's ~855
+// observation chars, measured live). build-main.mjs now re-fetches the same
+// two endpoints itself and builds the cards deterministically (same pattern
+// as cart-table/product-grid) - the bare marker is all the model needs to send.
+const dealCardsFooter = dealCards.length ? '\\n[BLOCK info-cards]' : '';
 const text = intro + dealCardsFooter +
   (ids.length ? '\\nMETA_PRODUCT_IDS: ' + ids.join(',') + '\\n[BLOCK product-grid]' : '\\nMETA_PRODUCT_IDS: none');
 return [{ json: { text } }];

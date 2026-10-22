@@ -557,6 +557,7 @@ const wantsGrid = /\\[BLOCK\\s+product-grid\\]/i.test(replyTxt);
 const wantsCart = /\\[BLOCK\\s+cart-table\\]/i.test(replyTxt);
 const wantsCheckout = /\\[BLOCK\\s+checkout\\]/i.test(replyTxt);
 const wantsOrder = /\\[BLOCK\\s+order-status\\]/i.test(replyTxt);
+const wantsInfoCards = /\\[BLOCK\\s+info-cards\\]/i.test(replyTxt);
 // Human-in-the-loop steps the agent asks for: a size choice (variant-picker) and
 // a confirm-before-changing-cart (approval). Both are blocks-only turns — the
 // customer's tap comes back on the NEXT request as a structured action.
@@ -607,14 +608,6 @@ try {
   const cm = replyTxt.match(/META_COMPARISON_JSON:\\s*(\\{.*\\})/i);
   if (cm) { try { comparisonMeta = JSON.parse(cm[1]); } catch (e) {} }
 } catch {}
-// The offers tool composes this itself (deterministic, same pattern as
-// META_ORDER_JSON) - the orchestrator is told to pass it through verbatim,
-// never author its own cards.
-let infoCardsMeta = null;
-try {
-  const icm = replyTxt.match(/META_INFO_CARDS_JSON:\\s*(\\{.*\\})/i);
-  if (icm) { try { infoCardsMeta = JSON.parse(icm[1]); } catch (e) {} }
-} catch {}
 // Guided-move chips the orchestrator authors itself, grounded in this turn
 // (dev/prompts.js "SUGGESTED NEXT STEPS") - replaces the widget's old
 // context-blind fallback (any product-grid always got the same canned
@@ -654,12 +647,9 @@ let wantsGridObs = false;
 let wantsCartObs = false;
 let wantsCheckoutObs = false;
 let wantsOrderObs = false;
+let wantsInfoCardsObs = false;
 let cartAddRan = false;
 let orderMeta = null;
-// Captures the current-offers tool's raw text when it's the general-summary
-// call (carries META_INFO_CARDS_JSON on that branch only - see OFFERS_CODE)
-// so the info-cards recovery below has the ground-truth source to fall back on.
-let offersObsText = '';
 try {
   const steps = $input.first().json.intermediateSteps || [];
   for (const st of steps) {
@@ -674,7 +664,7 @@ try {
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
     if (/\\[BLOCK\\s+checkout\\]/i.test(s)) wantsCheckoutObs = true;
     if (/\\[BLOCK\\s+order-status\\]/i.test(s)) wantsOrderObs = true;
-    if (toolName === 'get_current_offers' && /META_INFO_CARDS_JSON:/i.test(s)) offersObsText = s;
+    if (/\\[BLOCK\\s+info-cards\\]/i.test(s)) wantsInfoCardsObs = true;
     // The order specialist emits META_ORDER_JSON carrying the already-PII-free order payload.
     if (!orderMeta) orderMeta = orderMetaFrom(o);
     if (!ids.length) {
@@ -696,30 +686,46 @@ try {
     }
   }
 } catch {}
-// The deal names/dates now live ONLY in the info-cards block (see OFFERS_CODE
-// and the offers rule in dev/prompts.js) - the old backstop here that
-// re-appended "Also currently running: FLASH SALE: ..." text lines is gone on
-// purpose, since that text would now duplicate what the cards already show.
-// Same intermittent-drop risk the old text backstop guarded against still
-// applies to the marker itself - fall back to the raw tool observation
-// (ground truth) whenever the model's own reply didn't carry a parseable
-// META_INFO_CARDS_JSON, so the deal cards don't silently vanish.
-if (!infoCardsMeta && offersObsText) {
-  const icm2 = offersObsText.match(/META_INFO_CARDS_JSON:\\s*(\\{.*\\})/i);
-  if (icm2) { try { infoCardsMeta = JSON.parse(icm2[1]); } catch (e) {} }
-}
 const doGrid = wantsGrid || wantsGridObs;
 const doCart = wantsCart || wantsCartObs || cartAddRan;
 const doCheckout = wantsCheckout || wantsCheckoutObs;
 const doOrder = wantsOrder || wantsOrderObs || !!orderMeta;
+const doInfoCards = wantsInfoCards || wantsInfoCardsObs;
 const blocks = [];
 if (doOrder && orderMeta) blocks.push({ type: 'order-status', order: orderMeta });
-if (infoCardsMeta && Array.isArray(infoCardsMeta.cards)) {
-  const cards = infoCardsMeta.cards
-    .map((c) => ({ icon: String((c && c.icon) || '').trim(), title: String((c && c.title) || '').trim(), body: String((c && c.body) || '').trim() }))
-    .filter((c) => c.title)
-    .slice(0, 6);
-  if (cards.length) blocks.push({ type: 'info-cards', cards });
+// Deal names/dates re-fetched live here, same as cart-table/product-grid
+// below - the model only ever sends the bare [BLOCK info-cards] marker now
+// (see OFFERS_CODE), it no longer carries the card text itself. Found
+// 2026-10-22: the old META_INFO_CARDS_JSON this replaced was 657 of this
+// tool's ~855 observation chars, all of it display-only text the model
+// never needed to read, just relay.
+if (doInfoCards) {
+  try {
+    const [flashRes, comboRes] = await Promise.all([
+      call(base + '/api/v3/flash-deals'),
+      call(base + '/api/v4/combo-offers?per_page=5'),
+    ]);
+    const flashDeals = flashRes && Array.isArray(flashRes.data) ? flashRes.data : [];
+    const combos = comboRes && Array.isArray(comboRes.data) ? comboRes.data : [];
+    const daysLeft = (unixSeconds) => {
+      const ms = Number(unixSeconds) * 1000 - Date.now();
+      return Number.isFinite(ms) && ms > 0 ? Math.ceil(ms / 86400000) : null;
+    };
+    const cards = [];
+    for (const d of flashDeals.slice(0, 3)) {
+      const left = daysLeft(d && d.date);
+      const title = String((d && (d.title || d.subtitle)) || 'Flash Sale').trim();
+      cards.push({ icon: '\u{1F525}', title, body: left ? 'Ends in ' + left + ' day' + (left === 1 ? '' : 's') : 'Limited time' });
+    }
+    for (const c of combos.slice(0, 3)) {
+      const left = daysLeft(c && c.end_date);
+      const name = String((c && (c.combo_name || c.offer_title)) || 'Combo Offer').trim();
+      const cnt = Number(c && c.products_count) || 0;
+      const body = fmtTaka(c && c.combo_price) + (cnt ? ' for ' + cnt + ' items' : '') + (left ? ', ends in ' + left + ' day' + (left === 1 ? '' : 's') : '');
+      cards.push({ icon: '\u{1F381}', title: name, body });
+    }
+    if (cards.length) blocks.push({ type: 'info-cards', cards: cards.slice(0, 6) });
+  } catch {}
 }
 if (doGrid && !wantsComparison && ids.length) {
   try {
