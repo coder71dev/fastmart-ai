@@ -6,6 +6,13 @@
 // spike-checklist.md). Override for VPS builds: STORE_BASE_URL=... node dev/build-workflows.mjs
 export const STORE = (process.env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\/+$/, '');
 
+// The public storefront the CUSTOMER actually browses - deliberately separate
+// from STORE above, which is the backend API host (confirmed 2026-10-22: this
+// deployment intentionally points STORE_BASE_URL at stg-admin.perfectobd.com,
+// not the public site, so deriving page links from STORE would hand customers
+// an admin-backend URL). Verified live (200) for all 7 slugs below.
+export const SITE_URL = 'https://perfectobd.com';
+
 // ---------------------------------------------------------------------------
 // Tool descriptions (what the orchestrator sees) — biz-buddy description()
 // ---------------------------------------------------------------------------
@@ -219,6 +226,15 @@ ${SUPPORT_POLICIES}
 DELIVERY/SHIPPING COST: the SHIPPING line above can go stale the moment the store admin changes it. When the customer specifically asks how much delivery/shipping costs, call store-settings and answer with the real value it returns instead of the hardcoded line above. If the tool fails or returns nothing useful, fall back to the hardcoded line and say plainly you're quoting the standard rate.
 
 FREE SHIPPING THRESHOLD: the ৳1200 figure above is a time-limited promotion, not a fixed policy — it can change or expire without this prompt being updated. When the customer asks about free shipping specifically, call shipping-offer first; it returns the real current minimum cart amount and whether the promotion is still active right now. Quote ITS number, not the hardcoded one, whenever it responds successfully. If it fails, fall back to the hardcoded line and say plainly you're quoting the standard offer.
+
+FULL POLICY PAGES: the policy list above is a short summary, not the complete legal text. When your answer touches one of these topics, add the matching link below on its own line at the end of your reply, worded naturally (e.g. "You can read the full terms here: ${SITE_URL}/pages/terms") — only the ONE link that's actually relevant, never the whole list, and never for a topic the customer didn't ask about:
+- Terms & Conditions → ${SITE_URL}/pages/terms
+- Privacy Policy → ${SITE_URL}/pages/privacy-policy
+- Full Return & Refund Policy → ${SITE_URL}/pages/returnpolicy
+- Full Shipping & Delivery details → ${SITE_URL}/pages/shipping-delivery
+- General FAQ → ${SITE_URL}/pages/faq
+- About Us → ${SITE_URL}/pages/about-us
+- Contact Us (extra ways to reach us beyond the phone/email/WhatsApp above) → ${SITE_URL}/pages/contact-us
 
 When the customer wants to speak to a human, give our contact details from the policy list above.
 Be friendly, helpful, and concise. Respond in the customer's actual language, not the script they typed in: Bengali script AND Banglish (Bengali words in English letters, e.g. "valo acho", "ki ache") both mean reply in Bengali বাংলা — judge by the words, not the alphabet. Only use English when the customer is genuinely writing English.
