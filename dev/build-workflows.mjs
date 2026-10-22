@@ -824,13 +824,35 @@ const storeSettingsTool = {
   params: httpTool({
     name: 'store-settings',
     description:
-      "Get the store's REAL current delivery/shipping cost and whether it is a flat rate or zone-based. Always call this instead of guessing or repeating a number from memory when the customer asks specifically how much delivery/shipping costs. It does NOT cover the free-shipping-over-amount promotion - that is a separate, time-limited offer this tool can't see.",
+      "Get the store's REAL current delivery/shipping cost and whether it is a flat rate or zone-based. Always call this instead of guessing or repeating a number from memory when the customer asks specifically how much delivery/shipping costs. It does NOT cover the free-shipping-over-amount promotion - that is a separate, time-limited offer, see shipping-offer below.",
     method: 'GET',
     url: `=${P.STORE}/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type`,
   }),
 };
 
-const supportSpecialist = specialistWorkflow('specialist-support', P.SUPPORT_SPECIALIST, { retry: true, tools: [storeSettingsTool] });
+// Found 2026-10-22 (user-supplied swagger.yaml + live curl against stg-admin):
+// GET /api/v4/discover-offers?category=shipping returns the store's REAL,
+// currently-active free-shipping minimum cart amount (min_cart_amount /
+// formatted_min_cart_amount / is_valid) - confirmed live to be ৳1,200, not the
+// ৳1,500 this prompt hardcoded everywhere until this same commit. That number
+// is a time-boxed admin promotion (has start_date/end_date), not a fixed
+// policy, so it can drift from the hardcoded fallback again at any time - this
+// tool is how the model catches that instead of repeating a stale figure
+// forever. user_id is a required query param on this endpoint but doesn't
+// change the fields we read (verified: identical min_cart_amount/is_valid
+// with a nonsense id) - 'guest' is just a placeholder, not a real cart id.
+const shippingOfferTool = {
+  name: 'shipping-offer',
+  params: httpTool({
+    name: 'shipping-offer',
+    description:
+      "Get the store's REAL current free-shipping minimum cart amount and whether that promotion is currently active. Always call this instead of quoting a number from memory when the customer asks about the free-shipping threshold specifically.",
+    method: 'GET',
+    url: `=${P.STORE}/api/v4/discover-offers?user_id=guest&category=shipping`,
+  }),
+};
+
+const supportSpecialist = specialistWorkflow('specialist-support', P.SUPPORT_SPECIALIST, { retry: true, tools: [storeSettingsTool, shippingOfferTool] });
 
 const cartSpecialist = specialistWorkflow('specialist-cart', P.CART_SPECIALIST, {
   prepareJs: `const q = String($input.first().json.query ?? '');
