@@ -824,9 +824,9 @@ const storeSettingsTool = {
   params: httpTool({
     name: 'store-settings',
     description:
-      "Get the store's REAL current delivery/shipping cost and whether it is a flat rate or zone-based. Always call this instead of guessing or repeating a number from memory when the customer asks specifically how much delivery/shipping costs. It does NOT cover the free-shipping-over-amount promotion - that is a separate, time-limited offer, see shipping-offer below.",
+      "Get the store's REAL current delivery/shipping cost, shipping type, and official contact details (phone/email/address). Always call this instead of guessing or repeating a number from memory when the customer asks specifically how much delivery/shipping costs OR asks for our phone/email/address. It does NOT cover the free-shipping-over-amount promotion - that is a separate, time-limited offer, see shipping-offer below.",
     method: 'GET',
-    url: `=${P.STORE}/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type`,
+    url: `=${P.STORE}/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type,contact_phone,contact_email,contact_address`,
   }),
 };
 
