@@ -804,7 +804,33 @@ text = text.replace(/\\\\n{2,}/g, '\\\\n').trim();
 return [{ json: { text, product_ids } }];`,
 });
 
-const supportSpecialist = specialistWorkflow('specialist-support', P.SUPPORT_SPECIALIST, { retry: true });
+// Live store-settings lookup (business-settings API, public, no auth) - see
+// AGENTS.md / the 2026-10-22 API audit: the delivery/shipping figures in
+// SUPPORT_POLICIES above are hand-typed and go stale the moment an admin
+// changes them in the store's own settings panel. This gives support_specialist
+// a way to read the REAL current values instead of only reciting the hardcoded
+// text. Same minimal direct-httpRequestTool pattern as orderSpecialist's
+// track-order (no separate formatting sub-step needed - the model reads the
+// raw {type,value} pairs itself). Deliberately whitelists only the 3 types
+// confirmed to exist and matter here (fastmart-pro BusinessSetting seed data,
+// 2026-10-22) rather than the unfiltered endpoint, which also returns dozens
+// of unrelated admin toggles. NOTE: this does NOT cover the "free shipping
+// over ৳X" claim in SUPPORT_POLICIES - that threshold lives in a separate,
+// time-boxed admin promo table (shipping_discounts) with no public API at
+// all, so it stays an unverified, possibly-stale figure either way; see the
+// "ORDER PROBLEM"-style caveat in the prompt below.
+const storeSettingsTool = {
+  name: 'store-settings',
+  params: httpTool({
+    name: 'store-settings',
+    description:
+      "Get the store's REAL current delivery/shipping cost and whether it is a flat rate or zone-based. Always call this instead of guessing or repeating a number from memory when the customer asks specifically how much delivery/shipping costs. It does NOT cover the free-shipping-over-amount promotion - that is a separate, time-limited offer this tool can't see.",
+    method: 'GET',
+    url: `=${P.STORE}/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type`,
+  }),
+};
+
+const supportSpecialist = specialistWorkflow('specialist-support', P.SUPPORT_SPECIALIST, { retry: true, tools: [storeSettingsTool] });
 
 const cartSpecialist = specialistWorkflow('specialist-cart', P.CART_SPECIALIST, {
   prepareJs: `const q = String($input.first().json.query ?? '');
