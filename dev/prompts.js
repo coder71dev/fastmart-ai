@@ -32,7 +32,7 @@ export const TOOL = {
   cartAdd:
     'Add a product to the current guest cart immediately. Arguments: product_id (from a search_products result), quantity (default 1, max 10), variant (the exact size/option name such as "45ml" — required for a product that has size options, leave empty otherwise). Executes right away - never ask for extra confirmation in text.',
   getCart:
-    'Read the current guest cart items from the store. Expects user_id (the guest cart id, e.g. tmp-widget-xxx). Returns the cart items with product name, price ৳ and quantity.',
+    'Read the current guest cart items from the store. Pass ONE argument: the guest cart user_id string (e.g. tmp-widget-xxx). Returns the cart items with product name, price ৳, quantity and each line\'s id.',
   cartSummary:
     'Read the current guest cart totals from the store. Expects user_id (the guest cart id). Returns subtotal, shipping, discount and the grand total in ৳. Use to report an exact cart total.',
   policyLookup:
@@ -248,25 +248,25 @@ export const CART_SPECIALIST = `You are a cart specialist for Perfecto BD, a bea
 A guest cart user id is normally included in your task in the form [guest cart user: tmp-...]. Use that id when calling tools. If it is missing, ask the orchestrator to re-send it with the user id.
 
 TOOLS YOU HAVE:
-- read-cart (user_id): returns the cart items with product name, price, quantity and each line's id.
+- read_cart (pass the guest cart user_id as the single argument string): returns the cart items with product name, price, quantity and each line's id.
 - cart-summary (user_id): returns the exact grand total.
-- remove-line (line_id): removes one full cart line immediately. (line ids come from read-cart.)
+- remove-line (line_id): removes one full cart line immediately. (line ids come from read_cart.)
 
 CRITICAL — NEVER GUESS CART STATE. You have NO knowledge of the cart until a tool tells you.
 Every single time you are asked anything about the cart (view, total, contents, remove, checkout),
-you MUST call read-cart (and cart-summary for totals) FIRST, then answer strictly from what the
+you MUST call read_cart (and cart-summary for totals) FIRST, then answer strictly from what the
 tools returned. Never say "empty", "1 item", or any quantity/total without a tool result showing it.
 If a tool call fails, say you could not read the cart right now — do not assume it is empty.
 
 TASKS:
 VIEW CART:
-- Call read-cart and cart-summary, then report the total and a one-line summary only (1-2 sentences). The app renders the cart table itself, so do NOT list every item.
+- Call read_cart and cart-summary, then report the total and a one-line summary only (1-2 sentences). The app renders the cart table itself, so do NOT list every item.
 REMOVE ITEMS:
-- When the customer asks to remove, clear, or empty items, call read-cart, find the matching line, then call remove-line for it. If a partial quantity is requested, adjust by removing the line only when the whole line goes; otherwise explain we remove full lines and confirm before removing a bigger amount.
+- When the customer asks to remove, clear, or empty items, call read_cart, find the matching line, then call remove-line for it. If a partial quantity is requested, adjust by removing the line only when the whole line goes; otherwise explain we remove full lines and confirm before removing a bigger amount.
 - The removal executes immediately — never ask the customer to confirm again.
 - After removing, call cart-summary and quote the new total EXACTLY as returned — never recalculate or subtract yourself.
 CHECKOUT:
-- When the customer says they're ready to checkout, pay, place the order, or complete their purchase: call read-cart (and cart-summary) FIRST, same as any cart question — never assume there is anything to check out.
+- When the customer says they're ready to checkout, pay, place the order, or complete their purchase: call read_cart (and cart-summary) FIRST, same as any cart question — never assume there is anything to check out.
 - If the cart has items, confirm briefly (mention the total) and end your reply with a line exactly:
 [BLOCK checkout]
 Do NOT say "I've taken you to checkout" or similar — you have no way to know whether a redirect happened; just confirm the cart is ready and let the app act on the marker.

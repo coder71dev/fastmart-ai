@@ -22,6 +22,13 @@ const SEARCH_TOOL_ID = process.env.SEARCH_TOOL_ID || 'REPLACE_WITH_SEARCH_TOOL_I
 // Same deal for the slim product-detail tool (DETAIL_CODE below): deploy
 // dev/out/productDetailTool.json first, then rebuild with DETAIL_TOOL_ID=<id>.
 const DETAIL_TOOL_ID = process.env.DETAIL_TOOL_ID || 'REPLACE_WITH_DETAIL_TOOL_ID';
+// Same deal for the slim read-cart tool (READ_CART_CODE below) - added
+// 2026-10-22 to replace the direct httpRequestTool read-cart, which could not
+// be trimmed in place (see the big comment that used to sit on that tool:
+// n8n's response-optimization feature silently returns {} on this payload's
+// array-rooted shape, however it's pointed). deploy dev/out/readCartTool.json
+// first, then rebuild with READ_CART_TOOL_ID=<id>.
+const READ_CART_TOOL_ID = process.env.READ_CART_TOOL_ID || 'REPLACE_WITH_READ_CART_TOOL_ID';
 
 // ---- language model node (shared; provider chosen in model-config.mjs) -----
 function modelNode(x, y) {
@@ -705,6 +712,106 @@ function offersToolWorkflow() {
 }
 
 // ---------------------------------------------------------------------------
+// Slim read-cart tool (its own sub-workflow) - added 2026-10-22.
+// The direct httpRequestTool version of this returned the raw store payload
+// (~550 chars for ONE line: cart_type, removable, owner_id, user_id,
+// product_slug, min_order_amount, product_thumbnail_image, brand, category,
+// base_price, currency_symbol, tax, shipping_cost, shipping_type,
+// shipping_method, lower_limit, upper_limit - none of which the cart
+// specialist ever reads) with no way to trim it: n8n's own response-
+// optimization feature silently returns {} on this endpoint's array-rooted
+// shape (`[{name, owner_id, cart_items:[...]}]`) no matter what dataField
+// path is given - confirmed live by making the specialist report an empty
+// cart that really had an item in it. This tool does the fetch + trim itself
+// in a Code node instead (same pattern as SEARCH_CODE/DETAIL_CODE above),
+// returning one compact line per item with exactly what the specialist's own
+// prompt says it gets: "product name, price, quantity and each line's id".
+// ---------------------------------------------------------------------------
+const READ_CART_CODE = `
+const j = $input.first().json ?? {};
+const uid = String(j.query ?? j.input ?? j.user_id ?? '').trim();
+const base = ($env.STORE_BASE_URL || 'http://fastmart-pro.test').replace(/\\/+$/, '');
+
+function httpText(url, method) {
+  return new Promise((resolve) => {
+    let u = null;
+    try { u = new (require('url').URL)(url); } catch (e) { return resolve({ ok: false, status: 0, body: null }); }
+    const mod = require(u.protocol === 'https:' ? 'https' : 'http');
+    const req = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: method || 'GET' }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; if (data.length > 2000000) { req.destroy(); resolve({ ok: false, status: res.statusCode, body: null }); } });
+      res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: data }));
+      res.on('error', () => resolve({ ok: false, status: res.statusCode, body: null }));
+    });
+    req.on('error', () => resolve({ ok: false, status: 0, body: null }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ ok: false, status: 0, body: null }); });
+    req.end();
+  });
+}
+function firstJson(s) {
+  if (s == null) return null;
+  const i = s.indexOf('{'); const k = s.indexOf('[');
+  const start = i < 0 ? k : (k < 0 ? i : Math.min(i, k));
+  if (start < 0) return null;
+  try { return JSON.parse(s.slice(start)); } catch (e) { return null; }
+}
+
+if (!uid) {
+  return [{ json: { text: 'No user_id was passed - cannot read the cart. Ask the orchestrator to resend it.' } }];
+}
+
+const res = await httpText(base + '/api/v3/carts/' + encodeURIComponent(uid), 'POST');
+const parsed = firstJson(res.ok ? res.body : null);
+if (!parsed) {
+  return [{ json: { text: 'CART UNAVAILABLE - the store did not return the cart' + (res.status ? ' (HTTP ' + res.status + ')' : ' (no response)') +
+    '. Do NOT say the cart is empty - you have no result either way, say you could not read it right now.' } }];
+}
+const shops = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.data) ? parsed.data : []);
+const items = [];
+for (const shop of shops) {
+  for (const it of (shop && (shop.cart_items || shop.items)) || []) {
+    if (!it) continue;
+    items.push({
+      id: it.id,
+      name: String(it.product_name ?? it.name ?? 'Product'),
+      variation: it.variation ? String(it.variation) : null,
+      price: Number(it.price) || 0,
+      quantity: Number(it.quantity) || 0,
+    });
+  }
+}
+if (!items.length) return [{ json: { text: 'Cart is empty - no items found.' } }];
+const lines = items.map((it) => '- line_id=' + it.id + ' | ' + it.name + (it.variation ? ' (' + it.variation + ')' : '') + ' | ৳' + it.price.toLocaleString('en-US') + ' x' + it.quantity);
+const text = 'Cart contents (' + items.length + ' line' + (items.length === 1 ? '' : 's') + '):\\n' + lines.join('\\n') + '\\nUse line_id with remove-line to remove a specific line.';
+return [{ json: { text } }];
+`;
+
+function readCartToolWorkflow() {
+  const nodes = [];
+  const connections = {};
+  nodes.push(
+    node({
+      parameters: { events: 'worklfow_call', inputSource: 'passthrough' },
+      name: 'Sub Trigger',
+      type: 'n8n-nodes-base.executeWorkflowTrigger',
+      typeVersion: 1.2,
+      position: pos(0, 0),
+    }),
+  );
+  nodes.push(
+    node({
+      parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: READ_CART_CODE },
+      name: 'ReadCart',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: pos(240, 0),
+    }),
+  );
+  connections['Sub Trigger'] = { main: [[{ node: 'ReadCart', type: 'main', index: 0 }]] };
+  return { name: 'tool-read-cart', nodes, connections, settings: { executionOrder: 'v1' } };
+}
+
+// ---------------------------------------------------------------------------
 // Specialists
 // ---------------------------------------------------------------------------
 
@@ -900,25 +1007,19 @@ const um = q.match(/\\[guest cart user: (tmp[^\\]\\s]*)\\]/);
 return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
   tools: [
     {
-      name: 'read-cart',
-      params: httpTool({
-        name: 'read-cart',
+      // Backed by the slim tool (READ_CART_CODE) rather than the raw store
+      // payload - see its comment above for why the quick native-trim trick
+      // doesn't work on this endpoint's shape.
+      name: 'read_cart',
+      type: '@n8n/n8n-nodes-langchain.toolWorkflow',
+      typeVersion: 2.1,
+      params: {
+        name: 'read_cart',
         description: P.TOOL.getCart,
-        method: 'POST',
-        url: `=${P.STORE}/api/v3/carts/{{ $fromAI('user_id', 'the guest cart user_id (from [guest cart user: tmp-...])', 'string') }}`,
-        // NOT optimized, deliberately - tried 2026-10-22. Raw reply is [{name,
-        // owner_id, cart_items: [{id, ..., product_name, variation, price,
-        // quantity, ...}]}] - an ARRAY at the very top. n8n's optimizeResponse/
-        // dataField feature (used successfully on store-settings/shipping-offer/
-        // cart-summary below, which are all object-rooted) silently returns an
-        // empty {} for ANY dataField value here ('cart_items', '0.cart_items',
-        // '[0].cart_items' all tested, all empty - confirmed live by making the
-        // cart specialist report an empty cart that really had an item in it).
-        // Leaving this one raw: wrong-but-small (unused fields in context) beats
-        // wrong-and-silent (the agent going blind). A real fix needs a proper
-        // sub-workflow (HTTP Request + Code node), like searchTool/offersTool -
-        // bigger change, didn't do it today.
-      }),
+        source: 'database',
+        workflowId: { value: READ_CART_TOOL_ID },
+        workflowInputs: { mappingMode: 'defineBelow', value: null },
+      },
     },
     {
       name: 'cart-summary',
@@ -939,7 +1040,7 @@ return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
       name: 'remove-line',
       params: httpTool({
         name: 'remove-line',
-        description: 'Remove one full cart line by its line id (line ids come from read-cart). Executes immediately.',
+        description: 'Remove one full cart line by its line id (line ids come from read_cart). Executes immediately.',
         method: 'DELETE',
         url: `=${P.STORE}/api/v3/carts/{{ $fromAI('line_id', 'the cart line id to remove', 'number') }}`,
       }),
@@ -1118,11 +1219,37 @@ const orderSpecialist = specialistWorkflow('specialist-orders', P.ORDER_MANAGEME
   tools: [
     {
       name: 'track-order',
+      typeVersion: 4.5, // see the note on storeSettingsTool above
       params: httpTool({
         name: 'track-order',
         description: 'Look up an order by its exact code (e.g. TEST2026080810292989) to get its status, items, price and delivery estimate. Always pass the code exactly as the customer gave it. Call with no code to see nothing - always ask the customer for a code first.',
         method: 'GET',
         url: `=${P.STORE}/api/v3/track-order?code={{ encodeURIComponent($fromAI('order_code', 'the order code exactly as the customer wrote it', 'string')) }}`,
+        // Verified live 2026-10-22 against a real order (code PER1011660):
+        // raw reply is {data:{id,code,user_id,shipping_address:{address,
+        // country,state,city,area,phone,additional_phone,postal_code,name,
+        // email},payment_type,shipping_type,shipping_type_string,
+        // shipping_method,payment_status,payment_status_string,
+        // delivery_status,delivery_status_string,grand_total,coupon_discount,
+        // shipping_cost,subtotal,tax,date,cancel_request,manually_payable,
+        // links,reward,payments,total_amount_paid,items:{data:[...]}}} -
+        // ORDER_STATUS_FORMAT_JS below only ever reads the fields kept here.
+        // shipping_address is cut down to just .city (needed for the Dhaka
+        // vs rest-of-country ETA guess) - the other 9 address/contact fields
+        // are real customer PII (name/phone/email/address) that the model
+        // never needs to answer "what stage is my order at", so this also
+        // means the model literally never sees it, not just that the reply
+        // text gets redacted after the fact. items is kept whole on purpose -
+        // tried items.data.product_name etc (per-item dot paths into the
+        // nested ARRAY) against this same real order and it silently produced
+        // {} for every item (same failure as read-cart's cart_items). This
+        // feature can trim a nested OBJECT (shipping_address.city worked) but
+        // not reach inside an ARRAY wherever it sits - confirmed live
+        // 2026-10-22, don't retry this without a real order to check against.
+        optimize: {
+          dataField: 'data',
+          fields: 'code,date,delivery_status,delivery_status_string,payment_status,payment_status_string,payment_type,shipping_type_string,shipping_method,subtotal,shipping_cost,coupon_discount,tax,grand_total,items,shipping_address.city',
+        },
       }),
     },
   ],
@@ -1140,9 +1267,11 @@ for (const [k, v] of Object.entries(specMap)) {
 fs.writeFileSync(`${OUT}/searchTool.json`, JSON.stringify(searchToolWorkflow(), null, 2));
 fs.writeFileSync(`${OUT}/productDetailTool.json`, JSON.stringify(productDetailToolWorkflow(), null, 2));
 fs.writeFileSync(`${OUT}/offersTool.json`, JSON.stringify(offersToolWorkflow(), null, 2));
+fs.writeFileSync(`${OUT}/readCartTool.json`, JSON.stringify(readCartToolWorkflow(), null, 2));
 
-console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool + productDetailTool + offersTool');
+console.log('built specialists:', Object.keys(specMap).join(', '), '+ searchTool + productDetailTool + offersTool + readCartTool');
 console.log('search tool workflow id:', SEARCH_TOOL_ID);
 console.log('product-detail tool workflow id:', DETAIL_TOOL_ID);
+console.log('read-cart tool workflow id:', READ_CART_TOOL_ID);
 console.log('model:', MODEL_NODE.provider, '->', MODEL_NODE.model);
 console.log('out dir:', OUT);

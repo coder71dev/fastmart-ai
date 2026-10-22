@@ -340,7 +340,7 @@ let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
 // a customer-facing reply should never contain one. Catch either shape and
 // swap in a safe apology rather than try to salvage/trim the leaked part,
 // since the real answer sometimes follows the leak and sometimes doesn't.
-const INTERNAL_IDENTIFIERS = /\\b(product_discovery|order_management|support_specialist|cart_specialist|get_current_offers|cart-add|track-order|search_products|product_detail|read-cart|cart-summary|remove-line)\\b/;
+const INTERNAL_IDENTIFIERS = /\\b(product_discovery|order_management|support_specialist|cart_specialist|get_current_offers|cart-add|track-order|search_products|product_detail|read_cart|cart-summary|remove-line)\\b/;
 if (
   /^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(\\s*["'][\\s\\S]*["']\\s*\\)\\s*$/.test(replyTxt.trim()) ||
   INTERNAL_IDENTIFIERS.test(replyTxt)

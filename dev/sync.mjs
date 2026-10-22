@@ -62,6 +62,7 @@ const TOOL_WORKFLOWS = [
   { file: 'searchTool.json', name: 'tool-search-products', env: 'SEARCH_TOOL_ID' },
   { file: 'productDetailTool.json', name: 'tool-product-detail', env: 'DETAIL_TOOL_ID' },
   { file: 'offersTool.json', name: 'tool-current-offers', env: 'OFFERS_TOOL_ID' },
+  { file: 'readCartTool.json', name: 'tool-read-cart', env: 'READ_CART_TOOL_ID' },
 ];
 const SPECIALISTS = [
   { file: 'productDiscovery.json', name: 'specialist-product-discovery', env: 'PRODUCT_DISCOVERY_ID' },
@@ -184,6 +185,7 @@ function verify(ids) {
     [ids.SEARCH_TOOL_ID, 'tool-search-products'],
     [ids.DETAIL_TOOL_ID, 'tool-product-detail'],
     [ids.OFFERS_TOOL_ID, 'tool-current-offers'],
+    [ids.READ_CART_TOOL_ID, 'tool-read-cart'],
     [ids.PRODUCT_DISCOVERY_ID, 'specialist-product-discovery'],
     [ids.SUPPORT_SPECIALIST_ID, 'specialist-support'],
     [ids.CART_SPECIALIST_ID, 'specialist-cart'],
@@ -225,14 +227,15 @@ function verify(ids) {
   if (!model) problems.push('no model node in the built main workflow');
   else if (!Object.values(model.parameters || {}).some((v) => typeof v === 'string' && v.length)) problems.push('model node has no model id');
 
-  // httpRequestTool nodes (cart-add, read-cart, cart-summary, remove-line,
-  // track-order) bake their store origin into the URL AT BUILD TIME from
-  // process.env.STORE_BASE_URL (P.STORE in dev/prompts.js) - they cannot read
-  // $env like the Code-node tools (search/detail/offers/Prepare Input/Response)
-  // do at runtime. A plain `node dev/sync.mjs` run with STORE_BASE_URL unset in
-  // the shell silently bakes the 'http://fastmart-pro.test' fallback into those
-  // five tools while every Code-node tool keeps reading the CONTAINER's real
-  // STORE_BASE_URL - a split-brain where cart-add writes to one store and the
+  // httpRequestTool nodes (cart-add, cart-summary, remove-line, store-settings,
+  // shipping-offer, track-order) bake their store origin into the URL AT BUILD
+  // TIME from process.env.STORE_BASE_URL (P.STORE in dev/prompts.js) - they
+  // cannot read $env like the Code-node tools (search/detail/offers/read-cart/
+  // Prepare Input/Response) do at runtime. A plain `node dev/sync.mjs` run
+  // with STORE_BASE_URL unset in the shell silently bakes the
+  // 'http://fastmart-pro.test' fallback into those httpRequestTool tools while
+  // every Code-node tool keeps reading the CONTAINER's real STORE_BASE_URL -
+  // a split-brain where cart-add writes to one store and the
   // cart-table/product-grid read from another. This happened live 2026-10-14
   // (verified: cart-add silently pointed at fastmart-pro.test while everything
   // else used stg-admin.perfectobd.com) and is exactly the failure class this
@@ -310,10 +313,11 @@ async function main() {
     ids.SEARCH_TOOL_ID = existing.get('tool-search-products');
     ids.DETAIL_TOOL_ID = existing.get('tool-product-detail');
     ids.OFFERS_TOOL_ID = existing.get('tool-current-offers');
-    if (!ids.SEARCH_TOOL_ID || !ids.DETAIL_TOOL_ID || !ids.OFFERS_TOOL_ID) {
+    ids.READ_CART_TOOL_ID = existing.get('tool-read-cart');
+    if (!ids.SEARCH_TOOL_ID || !ids.DETAIL_TOOL_ID || !ids.OFFERS_TOOL_ID || !ids.READ_CART_TOOL_ID) {
       throw new Error('--check: tool sub-workflows not on this instance — run sync.mjs without --check first');
     }
-    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}  offersTool=${ids.OFFERS_TOOL_ID}`);
+    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}  offersTool=${ids.OFFERS_TOOL_ID}  readCartTool=${ids.READ_CART_TOOL_ID}`);
     console.log('\n[2/3] specialists');
     run('build-workflows.mjs', ids);
 
@@ -338,7 +342,8 @@ async function main() {
     ids.SEARCH_TOOL_ID = afterTools.get('tool-search-products');
     ids.DETAIL_TOOL_ID = afterTools.get('tool-product-detail');
     ids.OFFERS_TOOL_ID = afterTools.get('tool-current-offers');
-    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}  offersTool=${ids.OFFERS_TOOL_ID}`);
+    ids.READ_CART_TOOL_ID = afterTools.get('tool-read-cart');
+    console.log(`      searchTool=${ids.SEARCH_TOOL_ID}  detailTool=${ids.DETAIL_TOOL_ID}  offersTool=${ids.OFFERS_TOOL_ID}  readCartTool=${ids.READ_CART_TOOL_ID}`);
     console.log('\n[2/3] specialists');
     run('build-workflows.mjs', ids);
     for (const s of SPECIALISTS) deploy(s.file);
