@@ -24,6 +24,18 @@ services:
       - N8N_HOST=${N8N_HOST:-localhost}
       - N8N_PORT=${N8N_PORT:-5678}
       - N8N_PROTOCOL=${N8N_PROTOCOL:-https}
+      # n8n builds every self-referential URL (OAuth credential callbacks,
+      # webhook URLs shown in the editor) from N8N_PROTOCOL+HOST+PORT unless
+      # these are set - and PORT here is the internal container port (5678),
+      # which is only bound to 127.0.0.1 (see N8N_BIND above), never reachable
+      # from outside. Behind a reverse proxy that drops the port on the public
+      # URL, that means every OAuth callback n8n generates 404s in the browser.
+      # Confirmed live 2026-10-22 (Google Sheets OAuth sign-in): these two were
+      # already correct in .env, but docker-compose's `environment:` list is an
+      # allowlist, not a passthrough - .env alone never reached the container
+      # without an explicit line here too.
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+      - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL:-}
       - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-true}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:-}
