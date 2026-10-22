@@ -29,7 +29,17 @@ function modelNode(x, y) {
 }
 
 // ---- HTTP request tool (httpRequestTool 4.2, proven in spike) ------------
-function httpTool({ name, description, method, url, queryParams, bodyParams }) {
+// `optimize`, when passed, turns on the node's own built-in "Response
+// Optimization" (httpRequestTool's optimizeResponse/dataField/fieldsToInclude
+// params - n8n's native feature for exactly this: trimming a raw API JSON
+// blob down to the few fields the LLM actually needs before it's spent as
+// context). `optimize.dataField` names the array/object of interest when the
+// real payload sits inside an envelope (e.g. `{data: [...]}`); `optimize.fields`
+// is the comma-separated allowlist applied to it. Only use this where the real
+// response shape has been verified live (see git history / PR description) -
+// guessing field names here fails SILENTLY (empty tool result, not an error),
+// exactly the n8n failure class AGENTS.md §2 warns about.
+function httpTool({ name, description, method, url, queryParams, bodyParams, optimize }) {
   const p = {
     name,
     description,
@@ -38,7 +48,7 @@ function httpTool({ name, description, method, url, queryParams, bodyParams }) {
     url,
     authentication: 'none',
     sendHeaders: false,
-    options: { response: { response: { neverError: true, responseFormat: 'text', outputPropertyName: 'data' } } },
+    options: { response: { response: { neverError: true, responseFormat: optimize ? 'json' : 'text', outputPropertyName: 'data' } } },
   };
   if (queryParams) {
     p.sendQuery = true;
@@ -50,6 +60,13 @@ function httpTool({ name, description, method, url, queryParams, bodyParams }) {
     p.jsonBody = '={{ JSON.stringify({' + bodyParams.map((q) => JSON.stringify(q.name) + ': ' + q.expr).join(', ') + '}) }}';
   } else {
     p.sendBody = false;
+  }
+  if (optimize) {
+    p.optimizeResponse = true;
+    p.responseType = 'json';
+    if (optimize.dataField) p.dataField = optimize.dataField;
+    p.fieldsToInclude = 'selected';
+    p.fields = optimize.fields;
   }
   return p;
 }
@@ -821,12 +838,26 @@ return [{ json: { text, product_ids } }];`,
 // "ORDER PROBLEM"-style caveat in the prompt below.
 const storeSettingsTool = {
   name: 'store-settings',
+  // httpRequestTool 4.2 (the version used everywhere else in this file)
+  // SILENTLY drops optimizeResponse/dataField/fieldsToInclude/fields on
+  // deploy - this n8n instance only honors them from 4.5 on. Found 2026-10-22
+  // by deploying with 4.2 kept, then reading the live node back: the params
+  // this file sent were gone with no error anywhere (exactly the silent n8n
+  // failure class AGENTS.md §2 warns about) - verify with
+  // `node dev/read-wf.mjs` or the n8n MCP's get_workflow_details after any
+  // future change to an `optimize:` tool, don't trust a clean deploy alone.
+  typeVersion: 4.5,
   params: httpTool({
     name: 'store-settings',
     description:
       "Get the store's REAL current delivery/shipping cost, shipping type, and official contact details (phone/email/address). Always call this instead of guessing or repeating a number from memory when the customer asks specifically how much delivery/shipping costs OR asks for our phone/email/address. It does NOT cover the free-shipping-over-amount promotion - that is a separate, time-limited offer, see shipping-offer below.",
     method: 'GET',
     url: `=${P.STORE}/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type,contact_phone,contact_email,contact_address`,
+    // Verified live 2026-10-22: raw reply is {data:[{type,value,image_url,
+    // redirect_url,popup_product_name,popup_category_name,popup_flash_deal_name,
+    // popup_brand_name}, ...]} - 6 junk fields per row the model never reads,
+    // only type/value matter (it already reads these as "raw {type,value} pairs").
+    optimize: { dataField: 'data', fields: 'type,value' },
   }),
 };
 
@@ -843,18 +874,27 @@ const storeSettingsTool = {
 // with a nonsense id) - 'guest' is just a placeholder, not a real cart id.
 const shippingOfferTool = {
   name: 'shipping-offer',
+  typeVersion: 4.5, // see the note on storeSettingsTool above
   params: httpTool({
     name: 'shipping-offer',
     description:
       "Get the store's REAL current free-shipping minimum cart amount and whether that promotion is currently active. Always call this instead of quoting a number from memory when the customer asks about the free-shipping threshold specifically.",
     method: 'GET',
     url: `=${P.STORE}/api/v4/discover-offers?user_id=guest&category=shipping`,
+    // Verified live 2026-10-22: raw reply is {data:[{...~30 fields: combo_name,
+    // offer_cover, thumbnail, items, combo_items, conditions, shipping_discount
+    // object, etc.}], pagination:{...}} - only 3 fields ever matter here.
+    optimize: { dataField: 'data', fields: 'min_cart_amount,formatted_min_cart_amount,is_valid' },
   }),
 };
 
 const supportSpecialist = specialistWorkflow('specialist-support', P.SUPPORT_SPECIALIST, { retry: true, tools: [storeSettingsTool, shippingOfferTool] });
 
 const cartSpecialist = specialistWorkflow('specialist-cart', P.CART_SPECIALIST, {
+  // returnSteps: needed so Format Out below can check whether remove-line
+  // actually ran and actually succeeded, instead of trusting the model's own
+  // prose - see the formatJs comment for the live-reproduced bug this fixes.
+  returnSteps: true,
   prepareJs: `const q = String($input.first().json.query ?? '');
 const um = q.match(/\\[guest cart user: (tmp[^\\]\\s]*)\\]/);
 return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
@@ -866,15 +906,33 @@ return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
         description: P.TOOL.getCart,
         method: 'POST',
         url: `=${P.STORE}/api/v3/carts/{{ $fromAI('user_id', 'the guest cart user_id (from [guest cart user: tmp-...])', 'string') }}`,
+        // NOT optimized, deliberately - tried 2026-10-22. Raw reply is [{name,
+        // owner_id, cart_items: [{id, ..., product_name, variation, price,
+        // quantity, ...}]}] - an ARRAY at the very top. n8n's optimizeResponse/
+        // dataField feature (used successfully on store-settings/shipping-offer/
+        // cart-summary below, which are all object-rooted) silently returns an
+        // empty {} for ANY dataField value here ('cart_items', '0.cart_items',
+        // '[0].cart_items' all tested, all empty - confirmed live by making the
+        // cart specialist report an empty cart that really had an item in it).
+        // Leaving this one raw: wrong-but-small (unused fields in context) beats
+        // wrong-and-silent (the agent going blind). A real fix needs a proper
+        // sub-workflow (HTTP Request + Code node), like searchTool/offersTool -
+        // bigger change, didn't do it today.
       }),
     },
     {
       name: 'cart-summary',
+      typeVersion: 4.5, // see the note on storeSettingsTool above
       params: httpTool({
         name: 'cart-summary',
         description: P.TOOL.cartSummary,
         method: 'GET',
         url: `=${P.STORE}/api/v3/cart-summary/{{ $fromAI('user_id', 'the guest cart user_id (from [guest cart user: tmp-...])', 'string') }}`,
+        // Verified live 2026-10-22: raw reply also has calculable_sub_total,
+        // grand_total_value, coupon_code, coupon_applied, shipping_discount{} -
+        // the tool's own description promises exactly "subtotal, shipping,
+        // discount and the grand total", so that's all that's kept.
+        optimize: { fields: 'sub_total,shipping_cost,discount,grand_total' },
       }),
     },
     {
@@ -887,13 +945,56 @@ return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
       }),
     },
   ],
-  formatJs: `const out = $input.first().json.output;
+  formatJs: `const outObj = $input.first().json;
+const out = outObj.output;
 const raw = typeof out === 'string' ? out : (out?.output ?? JSON.stringify(out));
 let text = String(raw ?? '').replace(/<[^>]+>/g, '').replace(/\\n{2,}/g, '\\n').trim();
 // Same max-iterations leak class as the other specialists. A cart specialist that
 // ran out of turns may or may not have mutated the cart, so it must not guess
 // state either way — just say the action did not complete.
 if (/max iterations/i.test(text)) text = 'I could not finish that cart action just now — could you try once more?';
+
+// Reproduced live 2026-10-22: the model can reply "removed! your cart is
+// empty" while NEVER calling remove-line at all - the real cart (checked
+// directly against the store) still had the item. Exactly the silent-tool
+// -call class AGENTS.md section 2 warns about: never trust the model's own
+// prose as proof an action happened. Ground truth here is remove-line's own
+// observation, not the words the model chose to write.
+// httpRequestTool wraps a 'text' response as [{data: "<the actual JSON text,
+// itself escaped>"}] - the SAME nested-string shape ORDER_STATUS_FORMAT_JS
+// already has to unwrap below for track-order. Found live 2026-10-22: a plain
+// regex on the raw observation never matches (the quotes are escaped a layer
+// deep), so a removal that genuinely succeeded was still reported as failed.
+function unwrapObs(v) {
+  let cur = v;
+  for (let d = 0; d < 6; d++) {
+    if (typeof cur === 'string') {
+      const i = cur.indexOf('{'); const j = cur.indexOf('[');
+      const start = Math.min(i < 0 ? Infinity : i, j < 0 ? Infinity : j);
+      if (start === Infinity) return cur;
+      try { cur = JSON.parse(cur.slice(start)); continue; } catch (e) { return cur; }
+    }
+    if (Array.isArray(cur)) { if (cur.length === 1) { cur = cur[0]; continue; } return cur; }
+    if (cur && typeof cur === 'object' && cur.data !== undefined) { cur = cur.data; continue; }
+    return cur;
+  }
+  return cur;
+}
+try {
+  const steps = Array.isArray(outObj.intermediateSteps) ? outObj.intermediateSteps : [];
+  const removeCalls = steps.filter((s) => String((s && s.action && s.action.tool) || '') === 'remove-line');
+  const removeSucceeded = removeCalls.some((s) => {
+    const o = unwrapObs(s && s.observation);
+    return !!(o && typeof o === 'object' && (o.result === true || o.result === 'true'));
+  });
+  const removeAttemptedButFailed = removeCalls.length > 0 && !removeSucceeded;
+  const claimsRemoval = /\\bremov|\\bempt|খালি|ফাঁকা|বাদ\\s*দেওয়া|রিমুভ|সরান/i.test(text);
+  if (claimsRemoval && removeCalls.length === 0) {
+    text = 'Sorry, I could not confirm that removal just now — could you ask me to remove it one more time?';
+  } else if (removeAttemptedButFailed) {
+    text = 'I tried to remove that item but the store did not confirm it worked — could you try again in a moment?';
+  }
+} catch (e) {}
 return [{ json: { text } }];`,
 });
 
