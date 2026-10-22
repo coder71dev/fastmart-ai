@@ -323,6 +323,30 @@ const RESPONSE_CODE = `
 const d = $input.first().json.output;
 const raw = typeof d === 'string' ? d : (d && typeof d === 'object' && 'output' in d ? d.output : JSON.stringify(d));
 let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
+// Known failure mode - verified live against prod executions 2026-10-19..22
+// (5 occurrences across 3 days for one customer alone): the model's whole
+// "reply" is sometimes the literal tool-invocation string it meant to call
+// internally (e.g. product_discovery("dry skin cream...")) instead of an
+// actual answer - the call never ran (blocks/suggestions come back empty) and
+// the customer sees what looks like broken code.
+// A second, related shape (verified live 2026-10-22 while testing the ORDER
+// PROBLEM prompt change below): the model narrates its OWN plan in first
+// person before the real answer, e.g. "order_management ke call koreo kono
+// order code paoya jayni, tai ami... Let's ask politely for the order code."
+// followed by the actual Bengali question - a leaked chain-of-thought, not
+// code, but just as confusing to a customer. Both shapes share one reliable
+// tell: a bare internal tool/specialist identifier (snake_case or kebab-case,
+// never a real word in English or Bengali) appearing literally in the text -
+// a customer-facing reply should never contain one. Catch either shape and
+// swap in a safe apology rather than try to salvage/trim the leaked part,
+// since the real answer sometimes follows the leak and sometimes doesn't.
+const INTERNAL_IDENTIFIERS = /\\b(product_discovery|order_management|support_specialist|cart_specialist|get_current_offers|cart-add|track-order|search_products|product_detail|read-cart|cart-summary|remove-line)\\b/;
+if (
+  /^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(\\s*["'][\\s\\S]*["']\\s*\\)\\s*$/.test(replyTxt.trim()) ||
+  INTERNAL_IDENTIFIERS.test(replyTxt)
+) {
+  replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
+}
 // Gemini occasionally emits a mojibake rune (αº│) for ৳ — normalize it so the
 // price guard and currency formatter can see the real amounts.
 replyTxt = replyTxt.replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3');
@@ -539,10 +563,25 @@ const wantsOrder = /\\[BLOCK\\s+order-status\\]/i.test(replyTxt);
 const wantsVariant = /\\[BLOCK\\s+variant-picker\\]/i.test(replyTxt);
 const wantsApproval = /\\[BLOCK\\s+approval\\]/i.test(replyTxt);
 const wantsComparison = /\\[BLOCK\\s+comparison\\]/i.test(replyTxt);
+// Verified live 2026-10-19 (prod execs 2801/2802, user complaint in 2803): on a
+// turn where the orchestrator self-corrects a price from its own memory
+// instead of re-delegating to product_discovery (violating prompts.js RULE 1),
+// it can still echo a stale META_PRODUCT_IDS line it copy-habit-completed from
+// earlier context - the grid/carousel card then shows a DIFFERENT, unrelated
+// product than the one the reply is actually talking about. Only trust a
+// self-authored (reply-text) id list when a grid-capable specialist actually
+// ran THIS turn; otherwise fall through to the raw tool-observation ids below
+// (which stay empty with no such call), so no card renders rather than a
+// wrong one.
+let gridToolRanThisTurn = false;
+try {
+  const stepsForGrid = $input.first().json.intermediateSteps || [];
+  gridToolRanThisTurn = stepsForGrid.some((st) => ['product_discovery', 'get_current_offers'].includes(String(st && st.action && st.action.tool || '')));
+} catch {}
 let ids = [];
 try {
   const m = replyTxt.match(/META_PRODUCT_IDS:\\s*([\\d,\\s]+|none)/i);
-  if (m && m[1] && !/^none$/i.test(m[1].trim())) {
+  if (m && m[1] && !/^none$/i.test(m[1].trim()) && gridToolRanThisTurn) {
     ids = [...new Set(m[1].split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite))].slice(0, 5);
   }
 } catch {}
