@@ -1084,8 +1084,12 @@
          HISTORY — the panel keeps several conversations (localStorage
            `perfecto_sessions_v1` + `perfecto_active_session`), listed in the
            header's history drawer. Every conversation owns its own
-           `conversation_id`, so it has its own agent memory AND its own guest
-           cart: switching chats switches both (see syncSession/newChat).
+           `conversation_id` (agent memory only, see syncSession/newChat) -
+           the guest CART is scoped separately, to `userId`, one stable id per
+           browser (localStorage `perfecto_user_id`, minted once in boot()),
+           so switching chats switches memory but never the cart: the
+           customer's cart is one thing regardless of which conversation
+           they're in. See WIDGET-CONTRACT.md's own note on this split.
          ══════════════════════════════════════════════════════════════════════ */
       const CFG = {
         N8N: window.__PERFECTO_N8N_CHAT_WEBHOOK || "http://127.0.0.1:5678/webhook/spike/agent-chat",
@@ -1142,11 +1146,13 @@
       const pageOrigin = () => (typeof location !== "undefined" && location.origin ? location.origin : "(unknown)");
 
       /* Chat persistence — several conversations per customer, with history.
-         The server side (n8n PG memory + the store's guest cart) is keyed by
-         `conversation_id`, so each session owns its own id: switching chats
-         switches the agent's memory AND its guest cart. The transcripts are kept
-         here so the panel survives reloads and the customer can flip between
-         past conversations. */
+         n8n PG memory is keyed by `conversation_id`, so each session owns its
+         own id and switching chats switches the agent's memory - the guest
+         cart does NOT follow suit, it's scoped to the separate, stable
+         per-browser `userId` (see boot()), so the same cart shows no matter
+         which conversation is active. The transcripts are kept here so the
+         panel survives reloads and the customer can flip between past
+         conversations. */
       const SESS_KEY = "perfecto_sessions_v1";
       const ACTIVE_KEY = "perfecto_active_session";
       const CHAT_MAX = 60; // messages kept per session
@@ -1465,6 +1471,7 @@
           typing: false,
           messages: [],
           cid: "",
+          userId: "", // stable per-browser guest cart identity, see boot()
           __tidSeq: 0, // typeOut()'s per-message id counter, see ai()'s own comment
           sessions: [],
           activeId: "",
@@ -1479,6 +1486,16 @@
               const p = JSON.parse(localStorage.getItem("perfecto_profile") || "null");
               if (p && typeof p === "object") this.profile = { ...this.profile, ...p };
             } catch {}
+            // One guest identity per browser (not per conversation) - this is what
+            // owns the store's guest cart, so it has to stay the same across every
+            // saved conversation or switching chats would show a different, mostly
+            // empty cart each time. See cid's own comment below for the id that
+            // DOES vary per conversation (chat memory only).
+            try {
+              this.userId = localStorage.getItem("perfecto_user_id") || "";
+            } catch {}
+            if (!this.userId) this.userId = uid();
+            try { localStorage.setItem("perfecto_user_id", this.userId); } catch {}
             this.sessions = loadSessions();
             // Unguarded localStorage access here previously meant a thrown read (private
             // browsing, a storage policy, a restrictive sandboxed origin) aborted boot()
@@ -1941,10 +1958,10 @@
             this.addToCart(this.quick, this.quick.variant, this.quickQty).then((ok) => { if (ok) this.closeQuick(); });
           },
 
-          /* ══ cart (store guest cart, keyed by conversation_id) ══ */
+          /* ══ cart (store guest cart, keyed by the stable per-browser userId) ══ */
           async loadCart() {
             try {
-              const j = await this.get("/api/v3/carts/" + encodeURIComponent(this.cid), { method: "POST" });
+              const j = await this.get("/api/v3/carts/" + encodeURIComponent(this.userId), { method: "POST" });
               const shops = Array.isArray(j) ? j : (j && Array.isArray(j.data) ? j.data : []);
               const items = [];
               for (const s of shops) {
@@ -1966,7 +1983,7 @@
           },
           cartAddParams(id, quantity, variant) {
             const ps = new URLSearchParams();
-            ps.set("user_id", this.cid);
+            ps.set("user_id", this.userId);
             ps.set("id", String(id));
             ps.set("quantity", String(quantity || 1));
             if (variant) ps.set("variant", String(variant));
@@ -1996,13 +2013,13 @@
             this.busy = line.key;
             try {
               if (next < 1) {
-                const j = await this.get("/api/v3/carts/" + encodeURIComponent(line.key) + "?user_id=" + encodeURIComponent(this.cid), { method: "DELETE" });
+                const j = await this.get("/api/v3/carts/" + encodeURIComponent(line.key) + "?user_id=" + encodeURIComponent(this.userId), { method: "DELETE" });
                 if (j && j.result === false) throw new Error(j.message || "remove failed");
               } else {
                 const j = await this.get("/api/v3/carts/change-quantity", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ id: Number(line.key), quantity: next, user_id: this.cid }),
+                  body: JSON.stringify({ id: Number(line.key), quantity: next, user_id: this.userId }),
                 });
                 if (j && j.result === false) throw new Error(j.message || "update failed");
               }
@@ -2279,7 +2296,7 @@
             try {
               let r;
               try {
-                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj(), user_id: this.cid };
+                const payload = { message: text, conversation_id: this.cid, profile: this.profileObj(), user_id: this.userId };
                 if (action) payload.action = action;
                 r = await fetch(CFG.N8N, {
                   method: "POST",
