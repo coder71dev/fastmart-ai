@@ -6,7 +6,7 @@
 // thing being graded, and can run against local or VPS later.
 //
 // Usage:
-//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language|offers]
+//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language|offers|routine]
 //   node dev/eval-harness.mjs --out report.json
 //
 // Exit code 0 = no HARD failures; 1 = at least one HARD failure.
@@ -85,6 +85,7 @@ const cardsOf = (d) => d.blocks?.find((b) => b.type === 'product-grid' || b.type
 const cartOf = (d) => d.blocks?.find((b) => b.type === 'cart-table');
 const checkoutOf = (d) => d.blocks?.find((b) => b.type === 'checkout');
 const infoCardsOf = (d) => d.blocks?.find((b) => b.type === 'info-cards')?.cards ?? [];
+const routineOf = (d) => d.blocks?.find((b) => b.type === 'routine');
 
 function check(name, hard, fn) {
   return async () => {
@@ -397,6 +398,31 @@ battery.push(['remembers earlier detail across turns', 'memory', false, async ()
   const { json } = await postChat({ message: 'what skin type and budget did I tell you?', conversation_id: MEM_ID });
   const r = json?.reply ?? '';
   return { ok: /oily/i.test(r) && /\b700\b/.test(r), detail: r.slice(0, 110) };
+}]);
+
+// ---- routine (structured morning/night block) ------------------------------
+// "Build me a routine" should come back as a `routine` block (dev/prompts.js
+// "full routine" rule + dev/build-main.mjs's META_ROUTINE_JSON handling), not
+// a plain-text Morning/Night list - every step needs a real re-fetched
+// product (id/name/image/price), a time of exactly "morning" or "night", and
+// a non-empty role label (e.g. "Cleanser").
+battery.push(['build a routine: returns a routine block with real products', 'routine', true, async () => {
+  const { json } = await postChat({ message: 'build me a full skincare routine for oily skin', profile: { skin: 'Oily', concern: 'Acne', budget: 'Under Tk 3000' } });
+  const routine = routineOf(json);
+  const steps = [...(routine?.morning ?? []), ...(routine?.night ?? [])];
+  const validStep = (s) => s && s.product && Number(s.product.id) > 0 && String(s.product.name ?? '').length > 0 && String(s.role ?? '').length > 0;
+  const allValid = steps.length > 0 && steps.every(validStep);
+  const validTimes = (routine?.morning ?? []).length + (routine?.night ?? []).length === steps.length;
+  return { ok: !!routine && allValid && validTimes, detail: `morning=${routine?.morning?.length ?? 0}, night=${routine?.night?.length ?? 0}` };
+}]);
+battery.push(['routine turn never also emits a plain product-grid', 'routine', true, async () => {
+  const { json } = await postChat({ message: 'build me a morning and night routine for dry skin', profile: { skin: 'Dry', concern: 'Dryness', budget: 'Under Tk 3000' } });
+  const routine = routineOf(json);
+  const grid = cardsOf(json);
+  // The routine block replaces the grid for this turn (dev/prompts.js WIDGET
+  // CARDS rule) - both appearing together would mean the model emitted both
+  // markers, double-rendering the same products two different ways.
+  return { ok: !!routine && grid.length === 0, detail: `routine=${!!routine}, grid cards=${grid.length}` };
 }]);
 
 // ---- profile awareness -------------------------------------------------------

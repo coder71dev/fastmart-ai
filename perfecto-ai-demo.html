@@ -735,6 +735,39 @@
                       </div>
                     </div>
 
+                    <!-- routine: a full regimen turn (dev/prompts.js "full routine" rule) -
+                         replaces product-grid for that turn. Morning/Night tab toggle above a
+                         numbered step list; each step's product is the same card data as
+                         product-grid (WIDGET-CONTRACT.md's `routine` block), tapped open via
+                         the existing quick-view rather than a new interaction. -->
+                    <div
+                      x-show="b.type === 'routine'"
+                      x-data="{ tab: (b.morning && b.morning.length ? 'morning' : 'night') }"
+                      class="overflow-hidden rounded-2xl border border-sand bg-white"
+                      x-cloak
+                    >
+                      <div class="flex gap-1 border-b border-sand bg-cream/60 p-1.5" x-show="(b.morning || []).length && (b.night || []).length">
+                        <button type="button" @click="tab = 'morning'" class="flex-1 rounded-full px-3 py-1.5 text-[12px] font-semibold transition" :class="tab === 'morning' ? 'bg-clay text-cream' : 'text-ink/50 hover:text-ink/70'">☀️ Morning</button>
+                        <button type="button" @click="tab = 'night'" class="flex-1 rounded-full px-3 py-1.5 text-[12px] font-semibold transition" :class="tab === 'night' ? 'bg-clay text-cream' : 'text-ink/50 hover:text-ink/70'">🌙 Night</button>
+                      </div>
+                      <div class="divide-y divide-sand">
+                        <template x-for="s in (tab === 'morning' ? (b.morning || []) : (b.night || []))" :key="tab + '-' + s.step + '-' + s.product.id">
+                          <button type="button" @click="openQuick(s.product)" class="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-cream/60">
+                            <span class="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-clay/15 text-[11px] font-bold text-clay" x-text="s.step"></span>
+                            <span class="relative h-11 w-10 shrink-0 overflow-hidden rounded-lg bg-sand">
+                              <img :src="img(s.product.thumbnail)" @error="onImgError($event)" :alt="s.product.name" class="h-full w-full object-cover" loading="lazy" />
+                            </span>
+                            <span class="min-w-0 flex-1">
+                              <span class="block text-[13px] font-semibold" x-text="s.role"></span>
+                              <span class="block truncate text-[11px] text-ink/50" x-text="(s.product.brand ? s.product.brand + ' · ' : '') + s.product.name"></span>
+                            </span>
+                            <span class="shrink-0 text-sm" x-text="tab === 'morning' ? '☀️' : '🌙'"></span>
+                            <svg class="h-4 w-4 shrink-0 text-ink/30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                          </button>
+                        </template>
+                      </div>
+                    </div>
+
                     <div x-show="b.type === 'comparison'" class="overflow-hidden rounded-2xl border border-sand bg-white text-[12px]" x-cloak>
                       <table class="w-full">
                         <thead>
@@ -1039,11 +1072,14 @@
            product-grid|product-carousel {products:[card]}   cart-table {items:[...],total,count}
            comparison {items,rows}   category-carousel {categories}   rich-text {text}
            info-cards {cards}        chips {chips}
+           routine {morning:[{step,role,product:card}], night:[...]}   (replaces product-grid on a
+             "build me a routine" turn — see WIDGET-CONTRACT.md's own `routine` section)
            variant-picker {productId,productName,image,options:[{name,price,qty}]}   (human-in-the-loop)
            approval {action,summary,items:[{product_id,name,variant,quantity,price}],approveLabel,denyLabel}
-         The two human-in-the-loop blocks pause the agent's cart action: a tap posts a
-         structured `action` back to the webhook (see sendAction/chooseVariant/decideApproval)
-         and the resumed turn executes the add.
+           profile-questions {fields:[{key,label,type,options}],submitLabel}         (human-in-the-loop)
+         The three human-in-the-loop blocks pause the agent's turn: a tap posts a
+         structured `action` back to the webhook (see sendAction/chooseVariant/
+         decideApproval/submitProfileAnswers) and the resumed turn proceeds.
 
          HISTORY — the panel keeps several conversations (localStorage
            `perfecto_sessions_v1` + `perfecto_active_session`), listed in the
@@ -1230,6 +1266,23 @@
         if (t === "product-grid" || t === "product-carousel") {
           const products = normProducts(b.products ?? b.items);
           return products.length ? { type: t, products } : null;
+        }
+        // routine: replaces product-grid on a "build me a routine" turn — each
+        // step's `product` is the same card shape product-grid uses, so toCard()
+        // handles it unchanged; a step whose product fails to normalize (missing
+        // id/name) is just dropped rather than rendered broken.
+        if (t === "routine") {
+          const normSteps = (arr) =>
+            (Array.isArray(arr) ? arr : [])
+              .map((s, i) => {
+                const product = toCard(s && s.product);
+                if (!product) return null;
+                return { step: Number(s && s.step) || i + 1, role: String((s && s.role) ?? "").trim(), product };
+              })
+              .filter((s) => s.role);
+          const morning = normSteps(b.morning);
+          const night = normSteps(b.night);
+          return morning.length || night.length ? { type: t, morning, night } : null;
         }
         if (t === "cart-table") {
           const items = normCartItems(b.items);

@@ -53,7 +53,36 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
 - `token_usage` is **always `null`** — re-verified on n8n `2.40.5` (2026-09-22, the current `latest` image) and it was `null` on `2.37.6` before that, so it is a platform limit rather than a bug we can fix in the workflow: the Agent node's output is only `{output, intermediateSteps}` (this version never emits `tokenUsage`), and n8n's expression data proxy cannot read the `ai_languageModel` sub-node that actually holds the per-call usage — `$('OpenAI Chat Model')`, `$node[...]` and `.all()`/`.first()` all throw `No data found from 'main' input`. The field is kept in the response so a future n8n that does expose it needs no contract change. **For real per-turn cost, read n8n's own Postgres** (`metadata.tracing['llm.tokens.in'|'out']` per execution), which is what `dev/prod-bench.mjs` does — it sums the orchestrator **and** its child specialist executions.
 - `reply` may be empty when `blocks` is non-empty (a blocks-only turn, e.g. cart table).
 - `blocks` types are the widget's existing `OutputBlock` union:
-  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `checkout` | `order-status` | `variant-picker` | `approval` | `profile-questions`.
+  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `checkout` | `order-status` | `variant-picker` | `approval` | `profile-questions` | `routine`.
+
+### `routine` (a full skincare routine/regimen, split by time of day)
+
+Emitted instead of `product-grid`/`product-carousel` when the customer asks for a full routine or regimen (not a single product) — e.g. "build me a routine", "what should my morning and night routine look like". Replaces the old plain-text Morning/Night list with a structured block so the UI can render numbered steps with a product image, step role and time-of-day icon per step (see the reference mock the FE team was given — numbered circle, product thumbnail, role label + brand/name, sun/moon icon, chevron, with a Morning/Night tab toggle above the list).
+
+```jsonc
+{ "type": "routine",
+  "morning": [
+    { "step": 1, "role": "Cleanser", "product": { "id": 101, "name": "Toleriane Hydrating Gentle Cleanser", "brand": "La Roche-Posay", "price": 1450, "image": "uploads/all/file_a.jpg", "in_stock": true, "...": "rest of the same ProductCardData shape as product-grid" } },
+    { "step": 2, "role": "Toner", "product": { "id": 102, "name": "Heartleaf 77% Soothing Toner", "brand": "Anua", "...": "..." } },
+    { "step": 3, "role": "Serum", "product": { "id": 103, "name": "Niacinamide 10% + Zinc 1%", "brand": "The Ordinary", "...": "..." } },
+    { "step": 4, "role": "Moisturizer", "product": { "id": 104, "name": "Water Bank Cream", "brand": "Laneige", "...": "..." } },
+    { "step": 5, "role": "Sunscreen", "product": { "id": 105, "name": "Relief Sun: Rice + Probiotics SPF 50+ PA++++", "brand": "Beauty of Joseon", "...": "..." } }
+  ],
+  "night": [
+    { "step": 1, "role": "Cleanser", "product": { "id": 101, "...": "same product object as morning's step 1 — most steps repeat between times" } },
+    { "step": 2, "role": "Toner", "product": { "id": 102, "...": "..." } },
+    { "step": 3, "role": "Serum", "product": { "id": 103, "...": "..." } },
+    { "step": 4, "role": "Moisturizer", "product": { "id": 104, "...": "..." } }
+  ]
+}
+```
+
+- `morning`/`night` are each an ordered array of steps; either can be empty (but not both — the block is only emitted when at least one has a step). `step` is 1-based and local to its own array (morning and night each number from 1).
+- `role` is the agent's own short label for what the product is for ("Cleanser", "Toner", "Serum", "Moisturizer", "Sunscreen", "Treatment", …) — free text, not an enum, since a specific routine can call for a step type the examples above don't cover.
+- `product` is the **exact same `ProductCardData` shape** `product-grid`/`product-carousel` already use (id, name, brand, price, image, rating, in_stock, variants, …) — re-fetched live from the store the same way, so it's ground truth, not the agent's own copy. The same product commonly appears in both `morning` and `night` with the same `id` (e.g. cleanser/toner/moisturizer used both times) — the FE can key on `product.id` to dedupe lookups if useful, but each step is a fully independent object.
+- Only in-stock products are included; a step whose product sold out between search and this block being built is silently dropped rather than shown as unbuyable.
+- A routine turn's `suggestions` behave like any other recommendation turn (not suppressed) — e.g. "Add the full routine to my cart" is a reasonable chip.
+- Verified via `node dev/eval-harness.mjs --group routine`.
 
 ### `checkout` (customer wants to complete their purchase)
 

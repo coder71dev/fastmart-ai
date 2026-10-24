@@ -312,6 +312,9 @@ const CART_ADD_TOOL = {
 // Port of biz-buddy ChatController::buildBlocks / richTextTotalMismatch:
 //  - [BLOCK product-grid]  -> {type:'product-grid', products:[ProductCardData]}
 //    (ids from META_PRODUCT_IDS, re-fetched live = ground truth; empty resolves dropped)
+//  - [BLOCK routine]       -> {type:'routine', morning:[{step,role,product:ProductCardData}], night:[...]}
+//    (ids from the agent's own META_ROUTINE_JSON step list, re-fetched live same as the grid;
+//    time/role are the agent's own authored judgement, not re-fetched)
 //  - [BLOCK cart-table]    -> {type:'cart-table', items, total, count} (live re-read)
 //  - price guard: a ৳ figure next to the word "total" that contradicts the
 //    emitted cards/cart is replaced with the true total, so the user never
@@ -364,6 +367,7 @@ function stripFooter(s) {
     .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
     .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
+    .replace(/META_ROUTINE_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_INFO_CARDS_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
     .replace(/META_PROFILE_ASK:[^\\n]*\\n?/gi, '')
@@ -564,6 +568,7 @@ const wantsInfoCards = /\\[BLOCK\\s+info-cards\\]/i.test(replyTxt);
 const wantsVariant = /\\[BLOCK\\s+variant-picker\\]/i.test(replyTxt);
 const wantsApproval = /\\[BLOCK\\s+approval\\]/i.test(replyTxt);
 const wantsComparison = /\\[BLOCK\\s+comparison\\]/i.test(replyTxt);
+const wantsRoutine = /\\[BLOCK\\s+routine\\]/i.test(replyTxt);
 // Verified live 2026-10-19 (prod execs 2801/2802, user complaint in 2803): on a
 // turn where the orchestrator self-corrects a price from its own memory
 // instead of re-delegating to product_discovery (violating prompts.js RULE 1),
@@ -607,6 +612,14 @@ let comparisonMeta = null;
 try {
   const cm = replyTxt.match(/META_COMPARISON_JSON:\\s*(\\{.*\\})/i);
   if (cm) { try { comparisonMeta = JSON.parse(cm[1]); } catch (e) {} }
+} catch {}
+// The routine payload is the orchestrator's own time/role mapping over
+// product_discovery's ids - the product cards below (image/price/stock) are
+// the only re-fetched ground truth, same split as comparison above.
+let routineMeta = null;
+try {
+  const rm = replyTxt.match(/META_ROUTINE_JSON:\\s*(\\{.*\\})/i);
+  if (rm) { try { routineMeta = JSON.parse(rm[1]); } catch (e) {} }
 } catch {}
 // Guided-move chips the orchestrator authors itself, grounded in this turn
 // (dev/prompts.js "SUGGESTED NEXT STEPS") - replaces the widget's old
@@ -727,7 +740,7 @@ if (doInfoCards) {
     if (cards.length) blocks.push({ type: 'info-cards', cards: cards.slice(0, 6) });
   } catch {}
 }
-if (doGrid && !wantsComparison && ids.length) {
+if (doGrid && !wantsComparison && !wantsRoutine && ids.length) {
   try {
     const cards = [];
     for (const pid of ids) {
@@ -752,8 +765,9 @@ if (doGrid && !wantsComparison && ids.length) {
       // likely in its training), which is exactly why this always came out as
       // product-grid before: nothing upstream ever varied it. This is the one place
       // the rendered block's real type is set, regardless of which specialist or
-      // tool (product_discovery, get_current_offers, the routine path, ...)
-      // triggered the grid, so flipping it here covers all of them uniformly.
+      // tool (product_discovery, get_current_offers, ...) triggered the grid, so
+      // flipping it here covers all of them uniformly. The routine block below is
+      // its own type, never product-grid/carousel - see !wantsRoutine above.
       const layout = Math.random() < 0.5 ? 'product-grid' : 'product-carousel';
       blocks.push({ type: layout, products: cards });
       const gridTotal = cards.reduce((s, c) => s + c.price, 0);
@@ -781,6 +795,42 @@ if (wantsComparison && comparisonMeta && Array.isArray(comparisonMeta.rows) && i
       .filter((r) => r.label)
       .slice(0, 8);
     if (items.length && rows.length) blocks.push({ type: 'comparison', items, rows });
+  } catch {}
+}
+// ROUTINE — a full regimen turn (dev/prompts.js "full routine" rule): the
+// orchestrator maps product_discovery's own ids onto a time (morning/night)
+// and a step role (its own judgement, e.g. "Cleanser") as META_ROUTINE_JSON.
+// Every product is re-fetched live here (ground truth, same toCard()
+// pipeline as the grid/comparison above) so a hallucinated id just drops
+// silently instead of rendering fake data - same reasoning as the grid's own
+// in-stock filter. Deliberately NOT reusing the grid's \`ids\` (capped at 5
+// above, tuned for a 5-card grid) - a routine routinely needs 5-6 DISTINCT
+// products shared across both times, so ids come straight from the steps
+// list here instead, capped more generously. Gated on gridToolRanThisTurn
+// (product_discovery actually ran this turn) for the same stale-copy reason
+// documented on that flag above.
+if (wantsRoutine && routineMeta && Array.isArray(routineMeta.steps) && gridToolRanThisTurn) {
+  try {
+    const routineIds = [...new Set(routineMeta.steps.map((s) => parseInt(s && s.product_id, 10)).filter(Number.isFinite))].slice(0, 8);
+    const cardsById = new Map();
+    for (const pid of routineIds) {
+      const det = await call(base + '/api/v3/products/' + pid);
+      const obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
+      const card = toCard(obj);
+      if (card && card.in_stock) cardsById.set(pid, card);
+    }
+    const morning = [];
+    const night = [];
+    for (const s of routineMeta.steps) {
+      const card = cardsById.get(parseInt(s && s.product_id, 10) || 0);
+      if (!card) continue;
+      const time = String(s && s.time || '').trim().toLowerCase();
+      const role = String(s && s.role || '').trim().slice(0, 40);
+      if (!role || (time !== 'morning' && time !== 'night')) continue;
+      const list = time === 'morning' ? morning : night;
+      list.push({ step: list.length + 1, role, product: card });
+    }
+    if (morning.length || night.length) blocks.push({ type: 'routine', morning, night });
   } catch {}
 }
 if ((doCart || doCheckout) && userId) {
