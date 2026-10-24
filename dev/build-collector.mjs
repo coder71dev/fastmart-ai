@@ -28,10 +28,11 @@ const rand = () => Math.random().toString(36).slice(2, 8);
 const node = (o) => ({ id: o.id || rand(), disabled: false, ...o });
 
 // n8n's own DB (execution data) — NOT the fastmart_ai DB the PG Memory node uses.
-const METRICS_CRED = {
-  id: process.env.METRICS_CRED_ID || 'aDuHo9mivsM8kd9Z',
-  name: 'n8n Postgres (metrics, read-only)',
-};
+let credConfig = {};
+try { credConfig = JSON.parse(fs.readFileSync('.n8n-credentials.json', 'utf8')); } catch {}
+const METRICS_CRED_NAME = process.env.METRICS_CRED_NAME || credConfig.METRICS_CRED_NAME || 'n8n Postgres (metrics, read-only)';
+const METRICS_CRED_ID = process.env.METRICS_CRED_ID || credConfig.METRICS_CRED_ID || 'aDuHo9mivsM8kd9Z';
+const METRICS_CRED = { id: METRICS_CRED_ID, name: METRICS_CRED_NAME };
 const TABLE = process.env.TOKEN_TABLE || 'token_usage';
 const LIMIT = Number(process.env.COLLECT_LIMIT || 200);
 const MINUTES = Number(process.env.COLLECT_MINUTES || 5);
