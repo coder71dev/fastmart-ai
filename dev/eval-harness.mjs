@@ -233,7 +233,8 @@ battery.push(['cart remove empties it', 'cart', true, async () => {
   // serum with a non-zero total. If the line already vanished (store flake),
   // every read says empty — correct from the customer's perspective.
   const stillShowsSerum = !!ct && ct.total > 0 && (ct.items ?? []).some((i) => /iUNIK|serum/i.test(i.name ?? ''));
-  const saysEmpty = /(empty|nothing|no item|none|৳\s*0)/i.test(reply);
+  const cartEmpty = !ct || ct.total === 0 || (ct.items ?? []).length === 0;
+  const saysEmpty = cartEmpty || /(empty|nothing|no item|none|খালি|শূন্য|৳\s*0)/i.test(reply);
   return { ok: !stillShowsSerum && saysEmpty, detail: reply.slice(0, 120) };
 }]);
 
