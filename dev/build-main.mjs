@@ -323,7 +323,20 @@ const CART_ADD_TOOL = {
 // Block failures must NEVER break the reply: everything is wrapped in try/catch.
 // ---------------------------------------------------------------------------
 const RESPONSE_CODE = `
-const d = $input.first().json.output;
+// Every AI Agent reference below is by NAME ($('AI Agent'), never bare $input) -
+// Response now takes a SECOND input connection from Profile Questions Table
+// (see connections['Profile Questions Table'] below) so n8n's scheduler waits
+// for that node too before running Response, closing a real race: verified
+// live 2026-10-24, the table read correctly (3 rows back, no error) but the
+// profile-questions block still never rendered, because Response only
+// connected from AI Agent and ran as soon as THAT finished, with no
+// guarantee the parallel Profile Questions Table branch (also triggered by
+// User ID Present?) had completed yet - $('Profile Questions Table').all()
+// then threw on an empty/not-yet-run node, silently swallowed by this file's
+// own try/catch. Bare $input.first() would now be ambiguous about WHICH of
+// the two inputs it means, so every read of the agent's own output is
+// pinned to $('AI Agent') explicitly instead.
+const d = $('AI Agent').first().json.output;
 const raw = typeof d === 'string' ? d : (d && typeof d === 'object' && 'output' in d ? d.output : JSON.stringify(d));
 let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
 // Known failure mode - verified live against prod executions 2026-10-19..22
@@ -344,9 +357,19 @@ let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
 // swap in a safe apology rather than try to salvage/trim the leaked part,
 // since the real answer sometimes follows the leak and sometimes doesn't.
 const INTERNAL_IDENTIFIERS = /\\b(product_discovery|order_management|support_specialist|cart_specialist|get_current_offers|cart-add|track-order|search_products|product_detail|read_cart|cart-summary|remove-line)\\b/;
+// Scan only the part of the reply that would actually reach the customer. A
+// META_*_JSON line (e.g. META_APPROVAL_JSON: {"action":"cart-add",...}) is
+// structured metadata stripped out later (see stripFooter below) and
+// legitimately contains a real tool name as a JSON VALUE - "cart-add" there
+// is the approval's action name, not a leaked call. Verified live
+// 2026-10-24: a perfectly valid multi-item approval block got scrubbed into
+// the generic apology below purely because its own JSON said
+// "action":"cart-add", silently breaking the approval UI for every
+// multi-item cart-add whose approval payload mentions it.
+const scanText = replyTxt.replace(/META_[A-Z_]+:[^\\n]*\\n?/gi, '');
 if (
   /^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(\\s*["'][\\s\\S]*["']\\s*\\)\\s*$/.test(replyTxt.trim()) ||
-  INTERNAL_IDENTIFIERS.test(replyTxt)
+  INTERNAL_IDENTIFIERS.test(scanText)
 ) {
   replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
 }
@@ -363,8 +386,10 @@ function plainText(s) {
 function stripFooter(s) {
   return String(s ?? '')
     .replace(/META_PRODUCT_IDS:[^\\n]*\\n?/gi, '')
+    .replace(/META_VARIANT_IDS:[^\\n]*\\n?/gi, '')
     .replace(/META_ORDER_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_VARIANT_PRODUCT_ID:[^\\n]*\\n?/gi, '')
+    .replace(/META_PENDING_VARIANTS:[^\\n]*\\n?/gi, '')
     .replace(/META_APPROVAL_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_COMPARISON_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_ROUTINE_JSON:[^\\n]*\\n?/gi, '')
@@ -581,7 +606,7 @@ const wantsRoutine = /\\[BLOCK\\s+routine\\]/i.test(replyTxt);
 // wrong one.
 let gridToolRanThisTurn = false;
 try {
-  const stepsForGrid = $input.first().json.intermediateSteps || [];
+  const stepsForGrid = $('AI Agent').first().json.intermediateSteps || [];
   gridToolRanThisTurn = stepsForGrid.some((st) => ['product_discovery', 'get_current_offers'].includes(String(st && st.action && st.action.tool || '')));
 } catch {}
 let ids = [];
@@ -654,8 +679,15 @@ try {
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
 // product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
-// the cart specialist appends [BLOCK cart-table]. A successful cart-add this
-// turn also warrants the cart table (its true total is re-read live below).
+// the cart specialist appends [BLOCK cart-table]. ANY cart-add attempt this
+// turn also warrants the cart table (re-read live, ground truth, below) -
+// deliberately not gated on the call having actually succeeded. Verified live
+// 2026-10-24 on a multi-item "add them all" routine turn: one cart-add call
+// failed, the model's OWN prose still claimed two OTHER items it never even
+// attempted were added successfully - exactly the silent-failure-behind-a-
+// confident-reply pattern AGENTS.md §2 documents, just with the agent
+// fabricating success instead of staying silent. The reply text can't be
+// trusted either way, so always show what the cart actually contains.
 let wantsGridObs = false;
 let wantsCartObs = false;
 let wantsCheckoutObs = false;
@@ -664,14 +696,14 @@ let wantsInfoCardsObs = false;
 let cartAddRan = false;
 let orderMeta = null;
 try {
-  const steps = $input.first().json.intermediateSteps || [];
+  const steps = $('AI Agent').first().json.intermediateSteps || [];
   for (const st of steps) {
     const toolName = String(st && st.action && st.action.tool || '');
     let s = '';
     const o = st && st.observation;
     if (typeof o === 'string') s = o;
     else if (o != null) { try { s = JSON.stringify(o); } catch {} }
-    if (toolName === 'cart-add' && /added to cart successfully/i.test(s)) cartAddRan = true;
+    if (toolName === 'cart-add') cartAddRan = true;
     if (!s) continue;
     if (/\\[BLOCK\\s+product-grid\\]/i.test(s)) wantsGridObs = true;
     if (/\\[BLOCK\\s+cart-table\\]/i.test(s)) wantsCartObs = true;
@@ -880,14 +912,49 @@ if (wantsVariant && variantId) {
 }
 // APPROVAL — the agent's intended cart-add, shown for human verification. Only
 // items with a real numeric product_id survive; the widget posts them back
-// verbatim when the customer approves.
+// verbatim when the customer approves. Each item with no variant given is
+// re-checked live against the real store product (ground truth, same
+// toCard()-adjacent pattern as the grid/routine above) and dropped from the
+// approval if it actually needs a size - verified live 2026-10-24: the model
+// repeatedly put a variant-needing product into this JSON with an empty
+// variant despite explicit prompt instructions not to, and approving that as
+// written would crash cart-add on a null variant lookup. The first dropped
+// item gets its own variant-picker instead, built from the SAME live re-fetch
+// (so its name/options are ground truth, never the model's own copy - this
+// also closes a separate bug where the model named the wrong product while
+// asking for a size). Any further dropped items rely on the model's own
+// chained-picker instructions (see dev/prompts.js VARIANT PICKER /
+// META_PENDING_VARIANTS) once this first one resolves.
 if (wantsApproval && approvalMeta && Array.isArray(approvalMeta.items)) {
-  const items = approvalMeta.items
+  const rawItems = approvalMeta.items
     .map((x) => ({ product_id: Number(x.product_id) || 0, name: String(x.name ?? '').trim(), variant: x.variant ? String(x.variant) : null, quantity: Math.max(1, Math.min(10, Number(x.quantity) || 1)), price: Number(x.price) || 0 }))
     .filter((x) => x.product_id > 0)
     .slice(0, 10);
-  if (items.length) {
-    blocks.push({ type: 'approval', action: String(approvalMeta.action || 'cart-add'), summary: String(approvalMeta.summary || 'Confirm this cart change').slice(0, 200), items, approveLabel: 'Add to cart', denyLabel: 'Cancel' });
+  const safeItems = [];
+  let firstNeedsSize = null;
+  for (const x of rawItems) {
+    if (x.variant) { safeItems.push(x); continue; }
+    let hasVariants = false;
+    let obj = null;
+    try {
+      const det = await call(base + '/api/v3/products/' + x.product_id);
+      obj = det && Array.isArray(det.data) ? det.data[0] : (det && det.data && typeof det.data === 'object' ? det.data : null);
+      hasVariants = Array.isArray(obj && obj.variant) && obj.variant.length > 0;
+    } catch {}
+    if (hasVariants) { if (!firstNeedsSize) firstNeedsSize = obj; continue; }
+    safeItems.push(x);
+  }
+  if (safeItems.length) {
+    blocks.push({ type: 'approval', action: String(approvalMeta.action || 'cart-add'), summary: String(approvalMeta.summary || 'Confirm this cart change').slice(0, 200), items: safeItems, approveLabel: 'Add to cart', denyLabel: 'Cancel' });
+  }
+  if (firstNeedsSize && !wantsVariant) {
+    const varr = Array.isArray(firstNeedsSize.variant) ? firstNeedsSize.variant : [];
+    const options = varr
+      .map((v) => ({ name: String(v.variant ?? v.name ?? '').trim(), price: Number(v.discount_price ?? v.price ?? 0) || 0, qty: Number(v.qty) || 0 }))
+      .filter((o) => o.name);
+    if (options.length) {
+      blocks.push({ type: 'variant-picker', productId: Number(firstNeedsSize.id) || 0, productName: String(firstNeedsSize.name ?? '').trim(), image: firstNeedsSize.thumbnail_image ?? null, options });
+    }
   }
 }
 // PROFILE QUESTIONS — a single tappable form for whichever of skin/concern/
@@ -952,7 +1019,14 @@ if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !/[?\
   // what the model actually wrote), since after that prompt fix a Bengali- or
   // Banglish-asked turn always comes back in real Bengali script, never
   // Banglish itself - so this is a reliable signal, not a guess.
-  if (/[\\u0980-\\u09FF]/.test(replyTxt)) {
+  // EXCLUDES \\u09F2-\\u09FB (rupee mark/sign and other currency symbols in the
+  // Bengali block, incl. ৳ at \\u09F3) - verified live 2026-10-24: a 100%
+  // English reply ("I need a good moisturizer") got a Bengali follow-up
+  // question appended purely because a SUGGESTED NEXT STEPS chip mentioned a
+  // ৳ price elsewhere in the same (not-yet-stripped) replyTxt this check
+  // scans - every price-bearing English reply was at risk of this, not just
+  // ones that actually contained Bengali words.
+  if (/[\\u0980-\\u09F1\\u09FC-\\u09FF]/.test(replyTxt)) {
     const bnLabel = { 'skin type': '\u09b8\u09cd\u0995\u09bf\u09a8 \u099f\u09be\u0987\u09aa', concern: '\u0995\u09a8\u09b8\u09be\u09b0\u09cd\u09a8', budget: '\u09ac\u09be\u099c\u09c7\u099f' };
     const bnFields = profileAsk.map((f) => bnLabel[f] || f);
     replyTxt = replyTxt.trim() + '\\n\u0986\u09aa\u09a8\u09be\u09b0 ' + joinFields(bnFields, ' \u098f\u09ac\u0982 ') + ' \u0995\u09c0, \u09af\u09be\u09a4\u09c7 \u0986\u09ae\u09bf \u098f\u099f\u09bf \u0986\u09b0\u0993 \u09ad\u09be\u09b2\u09cb\u09ad\u09be\u09ac\u09c7 \u09ac\u09c7\u099b\u09c7 \u09a6\u09bf\u09a4\u09c7 \u09aa\u09be\u09b0\u09bf?';
@@ -970,7 +1044,7 @@ out.reply = replyClean;
 // The real per-turn cost is read out-of-band from n8n's Postgres runData by
 // dev/prod-bench.mjs (orchestrator + child specialist executions). See README.
 let usage = null;
-try { usage = $input.first().json.tokenUsage; } catch {}
+try { usage = $('AI Agent').first().json.tokenUsage; } catch {}
 if (usage) out.token_usage = { promptTokens: usage.promptTokens || 0, completionTokens: usage.completionTokens || 0, totalTokens: usage.totalTokens || 0 };
 return [{ json: out }];
 `;
@@ -1163,11 +1237,32 @@ for (const t of SPECIALIST_TOOLS) {
 
 nodes.push(
   node({
-    parameters: { language: 'javaScript', jsCode: RESPONSE_CODE },
+    parameters: { language: 'javaScript', jsCode: RESPONSE_CODE, mode: 'runOnceForAllItems' },
     name: 'Response',
     type: 'n8n-nodes-base.code',
     typeVersion: 2,
     position: pos(760, 0),
+  }),
+);
+// Waits for BOTH parallel branches (AI Agent + Profile Questions Table,
+// triggered together off "User ID Present?") before Response ever runs, then
+// passes AI Agent's item through unchanged. Needed because a plain second
+// connection straight into Response's own input does NOT make n8n wait and
+// merge - verified live 2026-10-24: with Profile Questions Table wired
+// directly into Response, Response (and the webhook response after it) fired
+// TWICE, once as soon as EACH branch completed. The first firing (racing
+// ahead of the slower table read) is what the webhook actually responds
+// with - "Respond to Webhook" can only answer once, so the second, complete
+// run (with the profile-questions block) was computed but never reached the
+// customer. chooseBranch/waitForAll is the node built specifically to wait
+// for every input before releasing exactly one set of items downstream.
+nodes.push(
+  node({
+    parameters: { mode: 'chooseBranch', numberInputs: 2, chooseBranchMode: 'waitForAll', output: 'specifiedInput', useDataOfInput: '1' },
+    name: 'Wait For Profile Questions',
+    type: 'n8n-nodes-base.merge',
+    typeVersion: 3.2,
+    position: pos(610, 0),
   }),
 );
 
@@ -1177,7 +1272,9 @@ connections['Prepare Input'] = { main: [[{ node: 'User ID Present?', type: 'main
 connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
-connections['AI Agent'] = { main: [[{ node: 'Response', type: 'main', index: 0 }]] };
+connections['AI Agent'] = { main: [[{ node: 'Wait For Profile Questions', type: 'main', index: 0 }]] };
+connections['Profile Questions Table'] = { main: [[{ node: 'Wait For Profile Questions', type: 'main', index: 1 }]] };
+connections['Wait For Profile Questions'] = { main: [[{ node: 'Response', type: 'main', index: 0 }]] };
 connections['Response'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
 
 const wf = {
