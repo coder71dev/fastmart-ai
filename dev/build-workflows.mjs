@@ -153,6 +153,7 @@ return [{ json: { chatInput: String(q).trim() } }];`,
 
   const fmt = node({
     parameters: {
+      mode: 'runOnceForAllItems',
       language: 'javaScript',
       jsCode:
         formatJs ||
@@ -1008,8 +1009,7 @@ const cartSpecialist = specialistWorkflow('specialist-cart', P.CART_SPECIALIST, 
   // prose - see the formatJs comment for the live-reproduced bug this fixes.
   returnSteps: true,
   prepareJs: `const q = String($input.first().json.query ?? '');
-const um = q.match(/\\[guest cart user: (tmp[^\\]\\s]*)\\]/);
-return [{ json: { chatInput: q, guestUserId: um ? um[1] : '' } }];`,
+return [{ json: { chatInput: q } }];`,
   tools: [
     {
       // Backed by the slim tool (READ_CART_CODE) rather than the raw store

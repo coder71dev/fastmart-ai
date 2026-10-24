@@ -543,7 +543,7 @@
               <p x-show="!sessions.length" class="px-3 py-10 text-center text-[12px] text-ink/45">No conversations yet.</p>
             </div>
 
-            <p class="shrink-0 border-t border-sand px-4 py-2.5 text-[10px] leading-relaxed text-ink/40">Each chat keeps its own basket, so switching conversations switches what's in your cart.</p>
+            <p class="shrink-0 border-t border-sand px-4 py-2.5 text-[10px] leading-relaxed text-ink/40">Your cart is shared across all your chats — switching conversations keeps the same basket.</p>
           </aside>
         </div>
 
@@ -1522,7 +1522,7 @@
           /* ══ conversations (multi-session history) ══ */
           activeSession() { return this.sessions.find((s) => s.id === this.activeId) || null; },
           // Point the panel at the active session: its transcript is this session's,
-          // and its id is the conversation_id the agent + guest cart are keyed by.
+          // and its id is the conversation_id the agent is keyed by (chat memory only).
           syncSession() {
             const s = this.activeSession();
             this.messages = s ? (s.messages || []).slice() : [];

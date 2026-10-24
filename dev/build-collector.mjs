@@ -195,10 +195,8 @@ for (const item of $input.all()) {
   }
 }
 
-// Advance the cursor even when this batch produced no LLM rows, otherwise a run
-// of non-AI executions would stall the collector on the same ids forever.
-const sd = $getWorkflowStaticData('global');
-if (maxId > (Number(sd.lastId) || 0)) sd.lastId = maxId;
+// (Cursor advance moved to REPORT_CODE — see its comment. maxId is still
+// computed above so the idle marker can carry upTo for non-AI batches.)
 
 // Always emit at least one item. n8n skips a node that receives no items, so an
 // idle batch (nothing new to ingest) used to end the run with zero items — and
@@ -216,6 +214,18 @@ return rows.map((json) => ({ json, pairedItem: { item: 0 } }));
 const REPORT_CODE = `
 const items = $input.all().map((i) => i.json);
 const idle = items.find((j) => j && j.__no_calls === true);
+// Advance the cursor only after a successful insert (non-idle branch) or for
+// an idle batch, so a failed insert does not silently drop its rows. Read the
+// watermark from the Decode step (not Report's own input) because the non-idle
+// branch's input is the Insert node's output, which may not carry execution_id.
+let dec = [];
+try { dec = $('Decode Calls').all().map((i) => i.json); } catch (e) { dec = []; }
+const decIdle = dec.find((j) => j && j.__no_calls === true);
+const sd = $getWorkflowStaticData('global');
+let maxId = 0;
+if (decIdle) { maxId = Number(decIdle.upTo) || 0; }
+else { for (const j of dec) { const id = Number(j && j.execution_id); if (id > maxId) maxId = id; } }
+if (maxId > (Number(sd.lastId) || 0)) sd.lastId = maxId;
 if (idle) {
   return [{ json: { ingested: 0, scanned: idle.scanned ?? 0, cursor: idle.upTo ?? 0, note: 'nothing new to ingest' } }];
 }

@@ -35,6 +35,22 @@ const PG_CRED = { id: PG_CRED_ID, name: PG_CRED_NAME };
 const node = (o) => ({ id: o.id || stableId(o.name), disabled: false, ...o });
 const pos = (x, y) => [x, y];
 
+// Retention cleanup (30-day default; low-score quality rows kept 90 days).
+// Runs every fire before sampling. chat_memory_fastmart has no timestamp
+// column of its own, so we add a created_at (default now()) on first run and
+// backfill existing rows once; cleanup then keys off it.
+const CLEANUP_SQL = `
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'chat_memory_fastmart') THEN
+    ALTER TABLE chat_memory_fastmart ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+    UPDATE chat_memory_fastmart SET created_at = now() WHERE created_at IS NULL;
+    DELETE FROM chat_memory_fastmart WHERE created_at < now() - interval '30 days';
+  END IF;
+END $$;
+DELETE FROM quality_eval WHERE evaluated_at < now() - interval '30 days' AND (score IS NULL OR score >= 3);
+DELETE FROM quality_eval WHERE evaluated_at < now() - interval '90 days';
+`.trim();
+
 // Pairs each human turn with the NEXT ai turn in the same session (adjacent-
 // turn pairing - good enough since every real turn in this app is a strict
 // human-then-ai alternation) and only returns pairs newer than the last one
@@ -179,6 +195,16 @@ nodes.push(
     type: 'n8n-nodes-base.scheduleTrigger',
     typeVersion: 1.4,
     position: pos(0, 0),
+  }),
+);
+nodes.push(
+  node({
+    parameters: { operation: 'executeQuery', query: CLEANUP_SQL, options: {} },
+    name: 'Cleanup Old Rows',
+    type: 'n8n-nodes-base.postgres',
+    typeVersion: 2.7,
+    position: pos(110, 0),
+    credentials: { postgres: PG_CRED },
   }),
 );
 nodes.push(
@@ -354,7 +380,8 @@ nodes.push(
   }),
 );
 
-connections['Schedule Trigger'] = { main: [[{ node: 'Sample Unjudged Turns', type: 'main', index: 0 }]] };
+connections['Schedule Trigger'] = { main: [[{ node: 'Cleanup Old Rows', type: 'main', index: 0 }]] };
+connections['Cleanup Old Rows'] = { main: [[{ node: 'Sample Unjudged Turns', type: 'main', index: 0 }]] };
 connections['Sample Unjudged Turns'] = { main: [[{ node: 'Clean Reply', type: 'main', index: 0 }]] };
 connections['Clean Reply'] = { main: [[{ node: 'Skip Block-Only Turns?', type: 'main', index: 0 }]] };
 // If output 0 = true (skip='yes', a variant-picker/approval turn) -> straight

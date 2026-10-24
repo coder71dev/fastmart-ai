@@ -97,6 +97,13 @@ CREATE INDEX IF NOT EXISTS token_cost_log_started_at_idx ON token_cost_log (star
 CREATE INDEX IF NOT EXISTS token_cost_log_parent_idx ON token_cost_log (parent_execution_id);
 `.trim();
 
+const CLEANUP_SQL = `
+DELETE FROM token_cost_log
+ WHERE started_at IS NOT NULL AND started_at < now() - interval '30 days';
+DELETE FROM token_cost_log
+ WHERE started_at IS NULL AND logged_at < now() - interval '30 days';
+`.trim();
+
 const READ_SQL = `
 SELECT e.id, e.mode, e."workflowId", e.status, e."startedAt", e."stoppedAt", ed.data
 FROM execution_entity e
@@ -161,7 +168,7 @@ for (const item of $input.all()) {
       if (t) { inTok += Number(t['llm.tokens.in']) || 0; outTok += Number(t['llm.tokens.out']) || 0; }
     }
     let provider = 'unknown', model = null;
-    if (runData['Gemini Model']) { provider = 'gemini'; model = 'gemini-3.5-flash-lite'; }
+    if (runData['Gemini Model']) { provider = 'gemini'; model = ($env.GEMINI_MODEL_LABEL || 'gemini-3.5-flash-lite'); }
     else if (runData['Google Gemini Chat Model']) { provider = 'gemini'; model = 'gemini (legacy node)'; }
     else if (runData['OpenAI Chat Model']) { provider = 'commandcode'; model = 'deepseek-v4.1-flash'; }
     try {
@@ -226,6 +233,16 @@ nodes.push(
 );
 nodes.push(
   node({
+    parameters: { operation: 'executeQuery', query: CLEANUP_SQL, options: {} },
+    name: 'Cleanup Old Rows',
+    type: 'n8n-nodes-base.postgres',
+    typeVersion: 2.7,
+    position: pos(330, 0),
+    credentials: { postgres: PG_CRED },
+  }),
+);
+nodes.push(
+  node({
     parameters: { operation: 'executeQuery', query: READ_SQL, options: {} },
     name: 'Read New Executions',
     type: 'n8n-nodes-base.postgres',
@@ -279,7 +296,8 @@ nodes.push(
 );
 
 connections['Schedule Trigger'] = { main: [[{ node: 'Ensure Table', type: 'main', index: 0 }]] };
-connections['Ensure Table'] = { main: [[{ node: 'Read New Executions', type: 'main', index: 0 }]] };
+connections['Ensure Table'] = { main: [[{ node: 'Cleanup Old Rows', type: 'main', index: 0 }]] };
+connections['Cleanup Old Rows'] = { main: [[{ node: 'Read New Executions', type: 'main', index: 0 }]] };
 connections['Read New Executions'] = { main: [[{ node: 'Extract Tokens + Cost', type: 'main', index: 0 }]] };
 connections['Extract Tokens + Cost'] = { main: [[{ node: 'Insert Log Row', type: 'main', index: 0 }]] };
 

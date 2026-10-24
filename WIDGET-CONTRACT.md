@@ -196,11 +196,11 @@ The workflow's `Prepare Input` node turns `action` into a `CUSTOMER ACTION: …`
 
 ## Guest cart plumbing (verified in Step 2)
 
-The widget's cart IS the store's guest cart. One shared `conversation_id` maps to the store cart's `tmp_*` user id:
+The widget's cart IS the store's guest cart. Cart identity is `user_id` (stable per browser), not `conversation_id`:
 
-- conversation_id `tmp-widget-<uuid>` → guest cart `user_id=tmp-widget-<uuid>` (store's `is_guest_user` middleware reads `tmp*` as `temp_user_id`).
-- n8n **echoes** the same id back (see above). If the widget doesn't send one, n8n mints `tmp-widget-<uuid>` and returns it — the widget stores it on the active conversation so a session keeps one cart.
-- The widget keeps a **list of conversations** (localStorage `perfecto_sessions_v1`, plus `perfecto_active_session` for the selected one). Each conversation keeps its own `conversation_id`, so switching chats switches the agent's memory *and* its guest cart — the same behaviour the old single-session "Reset session" button had.
+- `user_id` `tmp-widget-<uuid>` → guest cart `user_id=tmp-widget-<uuid>` (store's `is_guest_user` middleware reads `tmp*` as `temp_user_id`). One stable id per browser, shared across every conversation in the history drawer, so the cart never changes when switching chats.
+- `conversation_id` keys chat memory only (PG Memory). Each conversation keeps its own, so switching chats switches the agent's memory but not the cart.
+- n8n **echoes** `conversation_id` back (see above). If the widget doesn't send one, n8n falls back to `user_id`.
 
 ## Blocks JSON helpers (what the agent can emit)
 

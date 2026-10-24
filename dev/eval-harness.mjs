@@ -199,6 +199,28 @@ battery.push(['cart persists to a later view', 'cart', true, async () => {
   return { ok: true, detail: `view sees same line total ${ct.total}` };
 }]);
 
+battery.push(['cart survives switching conversations (decoupled identity)', 'cart', true, async () => {
+  // The widget keeps one stable user_id per browser across many conversation_ids;
+  // the cart must follow user_id, not conversation_id. This case reuses one
+  // user_id under two conversation_ids and asserts the cart added in A is still
+  // visible in B (the exact regression the decoupling fix in commit df69713
+  // prevents).
+  const uid = `tmp-evaldec-${RUN}`;
+  const convA = `tmp-evaldecA-${RUN}`;
+  const convB = `tmp-evaldecB-${RUN}`;
+  const a = await postChat({ message: 'add Dot & Key 10% Vitamin C+E Super Bright Face Serum to my cart', conversation_id: convA, user_id: uid });
+  if (a.status !== 200 || !a.json) return { ok: false, detail: 'add turn (A) failed' };
+  const ctA = cartOf(a.json);
+  if (!ctA || !(ctA.total > 0)) return { ok: false, detail: `no cart after add A (total ${ctA?.total})` };
+  const totalA = ctA.total;
+  const b = await postChat({ message: 'show me my cart', conversation_id: convB, user_id: uid });
+  if (b.status !== 200 || !b.json) return { ok: false, detail: 'view turn (B) failed' };
+  const ctB = cartOf(b.json);
+  if (!ctB || ctB.total !== totalA) return { ok: false, detail: `cart did not survive switch (A=${totalA}, B=${ctB?.total})` };
+  await postChat({ message: 'remove the serum from my cart', conversation_id: convB, user_id: uid });
+  return { ok: true, detail: `cart survived switch (total ${ctB.total})` };
+}]);
+
 battery.push(['cart remove empties it', 'cart', true, async () => {
   await postChat({ message: 'remove the serum from my cart', conversation_id: CART_ID });
   const { json } = await postChat({ message: 'is my cart empty now?', conversation_id: CART_ID });
