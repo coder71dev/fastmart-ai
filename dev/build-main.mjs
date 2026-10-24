@@ -58,6 +58,19 @@ const PREPARE_CODE = `
 const body = $input.first().json.body ?? {};
 let msgRaw = (body.message ?? body.chatInput ?? '').toString().trim();
 const userId = (body.user_id ?? body.userId ?? '').toString().trim();
+// The caller's own conversation_id, when it sends one - falls back to userId
+// (the pre-existing behavior, and what the demo widget still does: one
+// tmp-widget-<uuid> sent as BOTH fields, one cart = one conversation). A
+// caller with a STABLE user_id across many separate chat threads (a logged-
+// in app's account id, not a per-conversation guest id) needs this to
+// actually vary per thread, or every thread collapses into one shared PG
+// Memory session - verified live 2026-10-24: conversation_id was read
+// nowhere in this file, sessionId was hardcoded to userId, so a caller
+// sending two different conversation_ids under the same user_id got back
+// the SAME memory both times. user_id alone still owns the guest CART
+// (store identity, correctly shared across a customer's threads) -
+// conversation_id is only the chat-memory partition key.
+const conversationId = (body.conversation_id ?? body.conversationId ?? '').toString().trim() || userId;
 const profile = (body.profile && typeof body.profile === 'object') ? body.profile : null;
 const evalMode = body.eval === true || body.eval === 'true';
 if (!msgRaw) {
@@ -239,7 +252,7 @@ if (actionLine) parts.push(actionLine);
 const ctx = 'CURRENT SHOPPING CONTEXT (authoritative - trust this over conversation history):\\n' + parts.join('\\n');
 const systemPrompt = ${JSON.stringify(P.ORCHESTRATOR)} + '\\n\\n' + ctx;
 
-return [{ json: { chatInput: msgRaw, userId, sessionId: userId, conversationId: userId, profile, evalMode, action, systemPrompt } }];
+return [{ json: { chatInput: msgRaw, userId, sessionId: conversationId, conversationId, profile, evalMode, action, systemPrompt } }];
 `;
 
 // ---------------------------------------------------------------------------
@@ -579,7 +592,11 @@ function toCard(p) {
   }
 }
 const out = { reply: '', conversation_id: null, blocks: [], suggestions: [], token_usage: null };
-try { out.conversation_id = $('Prepare Input').first().json.userId; } catch {}
+// Echo the conversation_id actually used for memory (the caller's own, or
+// userId when it sent none) - not userId unconditionally, or a caller using
+// several conversation_ids under one user_id would see its own value
+// silently replaced with something else in every reply.
+try { out.conversation_id = $('Prepare Input').first().json.conversationId; } catch {}
 let userId = null;
 try { userId = $('Prepare Input').first().json.userId; } catch {}
 const wantsGrid = /\\[BLOCK\\s+product-grid\\]/i.test(replyTxt);

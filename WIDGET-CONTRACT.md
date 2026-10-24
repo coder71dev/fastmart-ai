@@ -24,8 +24,8 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
 ```jsonc
 {
   "message": "find me a serum under 2000 taka",   // user text (falls back to "Hi" if omitted)
-  "user_id": "tmp-widget-<uuid>",                   // REQUIRED — the widget keeps it in localStorage; the workflow 400s with {"error":"user_id is required"} if missing
-  "conversation_id": "tmp-widget-<uuid>",           // optional, same value as user_id; echoed back as-is
+  "user_id": "tmp-widget-<uuid>",                   // REQUIRED — the workflow 400s with {"error":"user_id is required"} if missing
+  "conversation_id": "tmp-widget-<uuid>",           // optional — the chat-memory key; falls back to user_id when omitted
   "profile": { "skin": "Oily", "concern": "Acne", "budget": "Under Tk 1500" }, // optional, quiz
   "action": { "type": "variant-selected", "product_id": 100, "variant": "45ml", "quantity": 1 } // optional; resumes a human-in-the-loop step
 }
@@ -33,7 +33,9 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
 
 `action` is how the widget answers a `variant-picker` / `approval` block (see **Human-in-the-loop** below). Omit it for a normal turn.
 
-`user_id` must be minted and persisted by the widget itself (e.g. `tmp-widget-<uuid>` in localStorage, same value used for `conversation_id`) — the workflow no longer mints one from `conversation_id` on its own. This must be a *per-browser* value; reusing one fixed id across different customers shares their guest cart and chat memory.
+`user_id` must be minted and persisted by the widget itself. It owns the guest **cart** (`/api/v3/carts/{user_id}`) — this must be a *per-browser* (or per-account) value; reusing one fixed id across different customers shares their guest cart.
+
+`conversation_id` owns the **chat memory** partition (PG Memory's session key) — it is a SEPARATE identity from `user_id`, not an alias for it. The demo widget's own convention (one `tmp-widget-<uuid>` sent as both fields, minted fresh per conversation) is one valid way to use this, but not the only one: a caller that keeps a single stable `user_id` across many chat threads (e.g. a logged-in app's account id, so the same cart follows the customer everywhere) must mint a DIFFERENT `conversation_id` per thread, or every thread collapses into one shared memory session — verified live 2026-10-24 as a real bug (fixed: `conversation_id` used to be read nowhere in the workflow and the memory key was hardcoded to `user_id`). When omitted, `conversation_id` falls back to `user_id`, matching the original single-conversation-per-guest behavior. The response always echoes back whichever value was actually used.
 
 ## Response (HTTP 200, `application/json`)
 
