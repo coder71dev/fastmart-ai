@@ -53,7 +53,7 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
 - `token_usage` is **always `null`** — re-verified on n8n `2.40.5` (2026-09-22, the current `latest` image) and it was `null` on `2.37.6` before that, so it is a platform limit rather than a bug we can fix in the workflow: the Agent node's output is only `{output, intermediateSteps}` (this version never emits `tokenUsage`), and n8n's expression data proxy cannot read the `ai_languageModel` sub-node that actually holds the per-call usage — `$('OpenAI Chat Model')`, `$node[...]` and `.all()`/`.first()` all throw `No data found from 'main' input`. The field is kept in the response so a future n8n that does expose it needs no contract change. **For real per-turn cost, read n8n's own Postgres** (`metadata.tracing['llm.tokens.in'|'out']` per execution), which is what `dev/prod-bench.mjs` does — it sums the orchestrator **and** its child specialist executions.
 - `reply` may be empty when `blocks` is non-empty (a blocks-only turn, e.g. cart table).
 - `blocks` types are the widget's existing `OutputBlock` union:
-  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `checkout` | `order-status` | `variant-picker` | `approval`.
+  `product-grid` | `product-carousel` | `comparison` | `category-carousel` | `rich-text` | `info-cards` | `chips` | `cart-table` | `checkout` | `order-status` | `variant-picker` | `approval` | `profile-questions`.
 
 ### `checkout` (customer wants to complete their purchase)
 
@@ -88,6 +88,33 @@ Emitted when the order specialist finds an order. **It carries no personal data*
 ```
 
 The widget maps `status` onto a 5-step fulfilment flow (Order Placed → Confirmed → **Packaging** → Out for Delivery → Delivered; `cancelled`/`returned`/`failed` render as a terminal state). Keep that map in step with the store's own `delivery_status` values — they are the store's, not ours (`pending`, `confirmed`, `hold`, `packaging`, `picked_up`, `on_the_way`, `shipped`, `delivered` — confirmed against the `orders` table). The ETA line is hidden once the order is delivered or terminal.
+
+### `profile-questions` (the in-chat skin quiz — missing skin type / concern / budget)
+
+Emitted on a general product-recommendation turn (browsing, "what should I use for X", a routine) when the orchestrator decides some of **skin type / concern / budget** aren't known yet — from `CURRENT SHOPPING CONTEXT`'s saved profile or anything the customer already said this conversation. The recommendation itself is never gated on this — the agent answers the question first and attaches this block alongside it, it does not withhold or delay the answer.
+
+```jsonc
+{ "type": "profile-questions",
+  "fields": [
+    { "key": "skin", "label": "What's your skin type?", "type": "select", "options": ["Oily", "Dry", "Combination", "Sensitive", "Normal"] },
+    { "key": "concern", "label": "What's your main concern?", "type": "select", "options": ["Acne", "Dark spots", "Dryness", "Aging", "Dullness"] }
+  ],
+  "submitLabel": "Continue" }
+```
+
+- The agent never writes this JSON itself — it only decides *which* fields are missing, as a `META_PROFILE_ASK: ["skin type", "concern", "budget"]` footer line (allowed values are exactly those three strings). The workflow's Code node turns that into the block above.
+- `fields` (label wording, `type`, `options`) are **not hardcoded** — they're read live from an n8n Data Table ("Profile Questions Table") keyed by `field_key` (`skin` | `concern` | `budget`), so an admin can add, reword, or remove a question (or add a new profile field entirely) from n8n's own Data Tables UI with no code change or redeploy. If a wanted field has no row in the table (table missing, empty, or incomplete), that field is silently dropped from `fields`, and if none end up with a row, the block isn't emitted at all — the agent's own prose question (plain text, no block) still covers it, so a misconfigured table degrades gracefully rather than breaking the turn.
+- `suggestions` is empty on a turn that emits this block (same reasoning as `variant-picker`/`approval` — the form itself is the next step).
+
+#### What the widget sends back
+
+The tap posts a normal turn with all answered fields at once:
+
+```jsonc
+{ "type": "profile-answers", "answers": { "skin": "Oily", "concern": "Acne", "budget": "Under Tk 1500" } }
+```
+
+The workflow merges `answers` straight into the saved customer profile (same shape/keys as the request body's own `profile` field — see above) before the agent's context is built, so `CURRENT SHOPPING CONTEXT` already reflects the new answers on the resumed turn. The agent is told the form was just submitted and proceeds straight to the recommendation using it — it does not ask again or re-render the form.
 
 ## Human-in-the-loop (variant-picker / approval)
 

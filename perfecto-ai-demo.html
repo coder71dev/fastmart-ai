@@ -1025,7 +1025,6 @@
                           min_price, max_price, limit, page
            GET  /api/v3/products/{id}                 product detail (photos, description, choice_options)
            GET  /api/v4/products/variants?product_id= variants (variant string, price, qty, image)
-           GET  /api/v3/skin-concerns                 quiz options                        -> {data:[{id,title}]}
            POST /api/v3/carts/{user_id}               read guest cart                      -> [{cart_items:[...]}]
            POST /api/v3/carts/add?user_id=&id=&quantity=&variant=   add
            POST /api/v3/carts/change-quantity  {id,quantity,user_id}  set qty
@@ -1420,13 +1419,6 @@
           catAtStart: true,
           catAtEnd: false,
           profile: { skin: null, concern: null, budget: null },
-          quiz: null,
-          skinConcerns: ["Acne", "Dark Spot", "Dryness", "Dullness", "Wrinkles"],
-          quizQs: [
-            { key: "skin", q: "What is your skin type?", o: ["Oily", "Dry", "Combination", "Sensitive", "Normal"] },
-            { key: "concern", q: "What is your main concern?", o: null },
-            { key: "budget", q: "What's your approximate budget?", o: ["৳1,000", "৳2,000", "৳3,000", "৳5,000"] },
-          ],
 
           /* ══ lifecycle ══ */
           boot() {
@@ -1455,7 +1447,6 @@
             this.loadCategories();
             this.loadProducts(true);
             this.loadCart();
-            this.loadSkinConcerns();
           },
 
           /* ══ conversations (multi-session history) ══ */
@@ -1466,7 +1457,6 @@
             const s = this.activeSession();
             this.messages = s ? (s.messages || []).slice() : [];
             this.cid = s ? s.id : uid();
-            this.quiz = null;
           },
           persist() {
             const s = this.activeSession();
@@ -1760,14 +1750,6 @@
             this.$nextTick(() => this.updateCatEdges());
           },
           catImgError(c) { c.thumb = null; },
-          async loadSkinConcerns() {
-            try {
-              const j = await this.get("/api/v3/skin-concerns");
-              const rows = firstArray(j) || [];
-              const titles = rows.map((r) => String(r.title ?? "").trim()).filter(Boolean).slice(0, 8);
-              if (titles.length) this.skinConcerns = titles;
-            } catch {}
-          },
           buildProductsQuery() {
             const f = this.filters;
             const ps = new URLSearchParams();
@@ -2071,7 +2053,7 @@
               tiles: [
                 { icon: "🧴", label: "Find a Product", say: "I'm looking for a product" },
                 { icon: "✨", label: "Build My Routine", say: "Build me a skincare routine" },
-                { icon: "🔍", label: "Skin Quiz", quiz: true },
+                { icon: "🔍", label: "Skin Quiz", say: "Recommend products based on my skin type, concern and budget" },
                 { icon: "💰", label: "Show Me Offers", say: "Show me current offers" },
                 { icon: "💡", label: "Ask a Question", say: "What is your return policy?" },
                 { icon: "📦", label: "Track My Order", say: "Where is my order?" },
@@ -2079,8 +2061,12 @@
             });
             this.persist();
           },
-          onTile(t) { if (t.quiz) return this.startQuiz(); return this.send(t.say); },
-          onChip(c) { if (/skin quiz/i.test(c)) return this.startQuiz(); return this.send(c); },
+          onTile(t) { return this.send(t.say); },
+          // "Take the skin quiz" sends the same canonical ask as the Skin Quiz tile
+          // above, so both land on the real orchestrator-driven profile-questions
+          // flow (admin-editable question set, single combined form) rather than a
+          // client-only, hardcoded Q&A — see META_PROFILE_ASK in dev/prompts.js.
+          onChip(c) { if (/skin quiz/i.test(c)) return this.send("Recommend products based on my skin type, concern and budget"); return this.send(c); },
           /* Guided moves under the latest assistant turn. The order of preference:
              the message's own chips, then a `chips` block, then client-derived
              moves from this turn's blocks + the customer's profile — so every
@@ -2174,7 +2160,6 @@
             if (!text || this.typing) return;
             this.draft = "";
             this.user(text);
-            if (this.quiz) { this.quizStep(text); return; }
             return this.request(text, action);
           },
           chooseVariant(b, o) {
@@ -2305,28 +2290,6 @@
             this.messages = this.messages.filter((x) => x !== m);
             this.persist();
             this.request(text, (m && m.retryAction) || undefined);
-          },
-
-          /* ══ quiz -> profile ══ */
-          startQuiz() {
-            this.quiz = { i: 0, ans: {} };
-            const q = this.quizQs[0];
-            this.ai("Let's do a quick 3-question skin check. ✨\n**1/3 — " + q.q + "**", { options: q.o });
-          },
-          quizStep(text) {
-            const q = this.quizQs[this.quiz.i];
-            this.quiz.ans[q.key] = text;
-            this.profile = { ...this.profile, [q.key]: text };
-            this.saveProfile();
-            this.quiz.i++;
-            if (this.quiz.i < this.quizQs.length) {
-              const n = this.quizQs[this.quiz.i];
-              this.ai("**" + (this.quiz.i + 1) + "/3 — " + n.q + "**", { options: n.o || this.skinConcerns });
-              return;
-            }
-            const ans = this.quiz.ans;
-            this.quiz = null;
-            this.send("My skin is " + ans.skin + ", main concern " + ans.concern + ", budget " + ans.budget + ". What do you recommend?");
           },
 
           /* ══ offline fallback catalog ══ */
