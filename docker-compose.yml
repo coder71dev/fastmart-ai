@@ -41,6 +41,7 @@ services:
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:-}
       - N8N_WEBHOOK_JWT_SECRET=${N8N_WEBHOOK_JWT_SECRET:-}
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - NODE_OPTIONS=--max-old-space-size=4096
       - NODE_FUNCTION_ALLOW_BUILTIN=http,https,util,path,url,zlib,crypto,stream,events
       # The blocks/price-guard Code node re-reads up to 5 product details plus the
       # cart over HTTP, each with a 20s timeout — a slow store can pass one minute.
