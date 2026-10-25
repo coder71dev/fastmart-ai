@@ -34,7 +34,7 @@ const METRICS_CRED_NAME = process.env.METRICS_CRED_NAME || credConfig.METRICS_CR
 const METRICS_CRED_ID = process.env.METRICS_CRED_ID || credConfig.METRICS_CRED_ID || 'aDuHo9mivsM8kd9Z';
 const METRICS_CRED = { id: METRICS_CRED_ID, name: METRICS_CRED_NAME };
 const TABLE = process.env.TOKEN_TABLE || 'token_usage';
-const LIMIT = Number(process.env.COLLECT_LIMIT || 200);
+const LIMIT = Number(process.env.COLLECT_LIMIT || 50);
 const MINUTES = Number(process.env.COLLECT_MINUTES || 5);
 
 // One row per LLM call. Column names are also the keys the decoder emits, so the
