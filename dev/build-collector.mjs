@@ -35,7 +35,7 @@ const METRICS_CRED_ID = process.env.METRICS_CRED_ID || credConfig.METRICS_CRED_I
 const METRICS_CRED = { id: METRICS_CRED_ID, name: METRICS_CRED_NAME };
 const TABLE = process.env.TOKEN_TABLE || 'token_usage';
 const LIMIT = Number(process.env.COLLECT_LIMIT || 50);
-const MINUTES = Number(process.env.COLLECT_MINUTES || 5);
+const MINUTES = Number(process.env.COLLECT_MINUTES || 120);
 
 // One row per LLM call. Column names are also the keys the decoder emits, so the
 // insert node can auto-map the input data.
