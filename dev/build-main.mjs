@@ -384,7 +384,11 @@ if (
   /^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(\\s*["'][\\s\\S]*["']\\s*\\)\\s*$/.test(replyTxt.trim()) ||
   INTERNAL_IDENTIFIERS.test(scanText)
 ) {
-  replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
+  if (/support_specialist/.test(scanText)) {
+    replyTxt = "I'm sorry that didn't come through properly. You can reach Perfecto BD support at +8801775-423477 or info@perfectobd.com, and find more ways to contact us and our full policies here: https://perfectobd.com/pages/contact-us (FAQ: https://perfectobd.com/pages/faq). Could you rephrase your question so I can look it up for you?";
+  } else {
+    replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
+  }
 }
 // Gemini occasionally emits a mojibake rune (αº│) for ৳ — normalize it so the
 // price guard and currency formatter can see the real amounts.
@@ -1051,6 +1055,27 @@ if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !/[?\
     replyTxt = replyTxt.trim() + '\\nWhat is your ' + joinFields(profileAsk, ' and ') + ', so I can narrow this down further for you?';
   }
 }
+// Deterministic backstop for support_specialist (AGENTS.md §2/§5): the
+// orchestrator is asked to relay the specialist's text verbatim, including
+// its policy/contact links, but live-verified 2026-10-26..28 it rephrases
+// into another language and drops the links. Re-inject any URL the
+// specialist actually emitted that is missing from the final reply.
+try {
+  const steps = $('AI Agent').first().json.intermediateSteps || [];
+  const supportRan = steps.some((st) => String(st && st.action && st.action.tool || '') === 'support_specialist');
+  if (supportRan) {
+    const urls = new Set();
+    for (const st of steps) {
+      if (String(st && st.action && st.action.tool || '') !== 'support_specialist') continue;
+      const o = st.observation;
+      const s = typeof o === 'string' ? o : (o != null ? JSON.stringify(o) : '');
+      for (const m of (s.match(/https?:\/\/[^\s)"']+/g) || [])) urls.add(m.replace(/[.,;:!?]+$/, ''));
+    }
+    for (const u of urls) {
+      if (!replyTxt.includes(u)) replyTxt = replyTxt.trim() + '\n' + u;
+    }
+  }
+} catch {}
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
 // token_usage stays null on this n8n version and that is not fixable in-workflow:
