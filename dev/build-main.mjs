@@ -1069,10 +1069,10 @@ try {
       if (String(st && st.action && st.action.tool || '') !== 'support_specialist') continue;
       const o = st.observation;
       const s = typeof o === 'string' ? o : (o != null ? JSON.stringify(o) : '');
-      for (const m of (s.match(/https?:\/\/[^\s)"']+/g) || [])) urls.add(m.replace(/[.,;:!?]+$/, ''));
+      for (const m of (s.match(/https?:\\/\\/[^\\s)"']+/g) || [])) urls.add(m.replace(/[.,;:!?]+$/, ''));
     }
     for (const u of urls) {
-      if (!replyTxt.includes(u)) replyTxt = replyTxt.trim() + '\n' + u;
+      if (!replyTxt.includes(u)) replyTxt = replyTxt.trim() + '\\n' + u;
     }
   }
 } catch {}
