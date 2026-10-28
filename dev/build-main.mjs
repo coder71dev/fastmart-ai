@@ -893,6 +893,34 @@ if (wantsRoutine && routineMeta && Array.isArray(routineMeta.steps) && gridToolR
 }
 if ((doCart || doCheckout) && userId) {
   try {
+    // Think like a human assistant: if a single cart-add failed only because
+    // the model sent a stray size/variant for a product that has NO options,
+    // silently retry without the variant instead of telling the customer it
+    // failed (prod 4491: variant "50ml" on a no-variant product -> store error
+    // "Attempt to read property price on null"). Only when the product truly
+    // has no variants; a real size choice is never stripped.
+    let retriedAddPid = 0;
+    try {
+      const addSteps0 = ($('AI Agent').first().json.intermediateSteps || []).filter((st) => String(st && st.action && st.action.tool || '') === 'cart-add');
+      if (addSteps0.length === 1) {
+        const ti0 = addSteps0[0].action.toolInput || {};
+        const pid0 = Number(ti0.product_id) || 0;
+        const qty0 = Math.max(1, Math.min(10, Number(ti0.quantity) || 1));
+        const o0 = addSteps0[0].observation;
+        const s0 = typeof o0 === 'string' ? o0 : (o0 != null ? JSON.stringify(o0) : '');
+        const failed0 = /Something went wrong/i.test(s0) || /on null/i.test(s0) || /result[^]{0,8}false/i.test(s0);
+        if (failed0 && pid0) {
+          const det0 = await call(base + '/api/v3/products/' + pid0);
+          const obj0 = det0 && Array.isArray(det0.data) ? det0.data[0] : (det0 && det0.data && typeof det0.data === 'object' ? det0.data : null);
+          const vars0 = Array.isArray(obj0 && obj0.variant) ? obj0.variant : [];
+          if (vars0.length === 0) {
+            const rr0 = await call(base + '/api/v3/carts/add?user_id=' + encodeURIComponent(userId) + '&id=' + pid0 + '&quantity=' + qty0, { method: 'POST' });
+            const ok0 = rr0 && (rr0.result === true || /added successfully/i.test(JSON.stringify(rr0)));
+            if (ok0) retriedAddPid = pid0;
+          }
+        }
+      }
+    } catch {}
     const rows = [];
     const read = await call(base + '/api/v3/carts/' + encodeURIComponent(userId), { method: 'POST' });
     if (Array.isArray(read)) {
@@ -946,6 +974,19 @@ if ((doCart || doCheckout) && userId) {
           }
         }
       } catch {}
+      // The retried add succeeded, so replace the model's "could not add"
+      // reply with the truth (name + real price from the cart line).
+      if (retriedAddPid) {
+        const rAdded = rows.find((r) => r.product_id === retriedAddPid);
+        if (rAdded) {
+          let custMsg0 = '';
+          try { custMsg0 = String((($('Prepare Input').first().json || {}).chatInput) || ''); } catch {}
+          const bn0 = /[\\u0980-\\u09FF]/.test(custMsg0);
+          replyTxt = bn0
+            ? rAdded.name + ' আপনার ব্যাগে যোগ করা হয়েছে। দাম ' + fmtTaka(rAdded.price) + '।'
+            : 'Added ' + rAdded.name + ' to your bag for ' + fmtTaka(rAdded.price) + '.';
+        }
+      }
     }
   } catch {}
 }
