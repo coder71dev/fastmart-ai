@@ -380,24 +380,21 @@ const INTERNAL_IDENTIFIERS = /\\b(product_discovery|order_management|support_spe
 // "action":"cart-add", silently breaking the approval UI for every
 // multi-item cart-add whose approval payload mentions it.
 const scanText = replyTxt.replace(/META_[A-Z_]+:[^\\n]*\\n?/gi, '');
-// Detect the leaked tool call, but do NOT just apologise: a leaked
-// support_specialist call is a real customer question that never ran. Record
-// its input and answer it deterministically further down (after the store
-// helpers exist) from the policy + live settings, instead of showing the
-// customer "I'm sorry that didn't come through properly".
-let leakedSupportInput = null;
-let otherLeak = false;
+// Detect a leaked tool call and answer it deterministically further down
+// (after the store helpers exist) instead of showing the customer a canned
+// apology. This covers EVERY specialist, not just support: order problems
+// (missing/wrong/damaged), product searches, cart, offers.
+let leakedTool = null;
+let leakedInput = '';
 const leakCall = replyTxt.trim().match(/^([a-zA-Z_][a-zA-Z0-9_]*)\\s*[({]\\s*(?:input\\s*:\\s*)?["']?([\\s\\S]*?)["']?\\s*[})]\\s*$/);
 if (leakCall) {
-  const tname = String(leakCall[1]).toLowerCase();
-  if (tname === 'support_specialist') leakedSupportInput = String(leakCall[2] || '').trim();
-  else otherLeak = true;
+  leakedTool = String(leakCall[1]).toLowerCase();
+  leakedInput = String(leakCall[2] || '').trim();
 } else if (INTERNAL_IDENTIFIERS.test(scanText)) {
-  if (/support_specialist/.test(scanText)) leakedSupportInput = '';
-  else otherLeak = true;
+  const im = scanText.match(INTERNAL_IDENTIFIERS);
+  leakedTool = im ? String(im[1]).toLowerCase() : 'unknown';
 }
-if (otherLeak) replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
-else if (leakedSupportInput !== null) replyTxt = '';
+if (leakedTool) replyTxt = '';
 // Gemini occasionally emits a mojibake rune (αº│) for ৳ — normalize it so the
 // price guard and currency formatter can see the real amounts.
 replyTxt = replyTxt.replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3');
@@ -1084,13 +1081,10 @@ try {
     }
   }
 } catch {}
-// Answer a leaked support_specialist call deterministically (see the detection
-// block near the top). The model wrote the call as text, so the specialist
-// never ran; build the real answer here from the store policy and live
-// contact/shipping settings so the customer's question is actually answered.
-// Same guard also rescues a misroute: if the customer clearly asked a support
-// question but the orchestrator ran get_current_offers instead (and support
-// never ran), answer the support question rather than showing deals.
+// Answer a leaked tool call deterministically (see the detection block near
+// the top). The model wrote the call as text, so the specialist never ran;
+// build a real answer here instead of showing the customer a canned apology.
+// Covers order problems/tracking, product search, offers, cart and support.
 let supportIntentGuard = false;
 try {
   const cm0 = String((($('Prepare Input').first().json || {}).chatInput) || '');
@@ -1098,19 +1092,16 @@ try {
   const supportRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'support_specialist');
   const offersRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'get_current_offers');
   const supportIntent0 = /authentic|genuine|fake|original|return|refund|exchange|deliver|shipping|ship|payment|cod|cash|cancel|warrant|contact|phone|email|address|hotline|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|অথেন্টিক|আসল|নকল|খাঁটি|রিটার্ন|ফেরত|বদল|ডেলিভারি|শিপিং|কবে|পেমেন্ট|ক্যাশ|ক্যান্সেল|বাতিল|ওয়ারেন্টি|গ্যারান্টি|কথা/i.test(cm0);
-  // Authenticity asks are unambiguous even when the model mangles the Bengali
-  // and routes to product_discovery/offers instead of support, so allow that
-  // one intent to override any non-support route.
   const authIntent0 = /authentic|genuine|fake|অথেন্টিক|আসল|নকল|খাঁটি/i.test(cm0);
-  supportIntentGuard = (leakedSupportInput === null && !supportRan0 && (authIntent0 || (offersRan0 && supportIntent0)));
+  supportIntentGuard = (!leakedTool && !supportRan0 && (authIntent0 || (offersRan0 && supportIntent0)));
 } catch {}
-if (leakedSupportInput !== null || supportIntentGuard) {
+if (leakedTool || supportIntentGuard) {
+  let custMsg = '';
+  try { custMsg = String((($('Prepare Input').first().json || {}).chatInput) || ''); } catch {}
+  const bn = /[\\u0980-\\u09FF]/.test(custMsg);
   let ans = '';
   try {
-    if (leakedSupportInput === null) leakedSupportInput = '';
-    const custMsg = String((($('Prepare Input').first().json || {}).chatInput) || '');
-    const bn = /[\\u0980-\\u09FF]/.test(custMsg);
-    const q = (leakedSupportInput + ' ' + custMsg).toLowerCase();
+    const q = (leakedInput + ' ' + custMsg).toLowerCase();
     let settings = null;
     try {
       settings = await call(base + '/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type,contact_phone,contact_email,contact_address');
@@ -1124,55 +1115,84 @@ if (leakedSupportInput !== null || supportIntentGuard) {
     const address = sm.contact_address || 'Perfecto, Shop No: 14, 2nd Floor, Rankin Square Market, 32 Rankin St, Dhaka 1203';
     const off = sm.shipping_cost_admin || (sm.flat_rate_shipping_cost && String(sm.flat_rate_shipping_cost) !== '0' ? sm.flat_rate_shipping_cost : null);
     const web = 'https://perfectobd.com';
-    if (/contact|phone|email|address|hotline|human|speak|talk|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|কথা/.test(q)) {
+    if (supportIntentGuard || leakedTool === 'support_specialist') {
+      if (/contact|phone|email|address|hotline|human|speak|talk|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|কথা/.test(q)) {
+        ans = bn
+          ? 'আপনি আমাদের সাথে এই নম্বরে যোগাযোগ করতে পারেন: ' + phone + '\\nইমেইল: ' + email + '\\nঠিকানা: ' + address + '\\nযোগাযোগের অন্যান্য উপায়: ' + web + '/pages/contact-us'
+          : 'You can reach us at ' + phone + ' or ' + email + '.\\nAddress: ' + address + '\\nMore ways to contact us: ' + web + '/pages/contact-us';
+      } else if (/authentic|genuine|fake|original|real|অথেন্টিক|আসল|নকল|খাঁটি/.test(q)) {
+        ans = bn
+          ? 'হ্যাঁ, পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। বিস্তারিত: ' + web + '/pages/about-us'
+          : 'Yes - all Perfecto BD products are 100% authentic and sourced from official brands. Learn more: ' + web + '/pages/about-us';
+      } else if (/return|refund|exchange|রিটার্ন|ফেরত|বদল/.test(q)) {
+        ans = bn
+          ? 'অব্যবহৃত ও খোলা না করা প্রোডাক্টের জন্য আমাদের ১৪ দিনের রিটার্ন পলিসি রয়েছে; রিফান্ড রিটার্ন পাওয়ার ৫-৭ কার্যদিবসের মধ্যে প্রসেস হয়। বিস্তারিত: ' + web + '/pages/returnpolicy'
+          : 'We have a 14-day return policy for unused, unopened products, and refunds are processed within 5-7 business days after we receive the return. Details: ' + web + '/pages/returnpolicy';
+      } else if (/free ship|free deliver|ফ্রি|ফ্রী|মুফত/.test(q)) {
+        ans = bn
+          ? 'বর্তমান অফার অনুযায়ী ৳১,২০০-এর বেশি অর্ডারে ফ্রি শিপিং প্রযোজ্য। বিস্তারিত: ' + web + '/pages/shipping-delivery'
+          : 'Free shipping applies on orders over ৳1,200 as part of our current promotion. Details: ' + web + '/pages/shipping-delivery';
+      } else if (/deliver|shipping|ship|ডেলিভারি|শিপিং|কবে/.test(q) && /cost|charge|fee|koto|কত|খরচ|চার্জ/.test(q)) {
+        ans = bn
+          ? 'ডেলিভারি চার্জ ' + (off ? '৳' + off : 'এলাকাভিত্তিক') + '। স্ট্যান্ডার্ড ডেলিভারি ২-৪ কার্যদিবস (ঢাকায় ১-২ দিন)। বিস্তারিত: ' + web + '/pages/shipping-delivery'
+          : 'Delivery charge is ' + (off ? '৳' + off : 'area-based') + '. Standard delivery takes 2-4 business days (1-2 days in Dhaka). Details: ' + web + '/pages/shipping-delivery';
+      } else if (/deliver|shipping|ship|ডেলিভারি|শিপিং|কবে/.test(q)) {
+        ans = bn
+          ? 'স্ট্যান্ডার্ড ডেলিভারি সারা বাংলাদেশে ২-৪ কার্যদিবস, ঢাকায় ১-২ দিন। বিস্তারিত: ' + web + '/pages/shipping-delivery'
+          : 'Standard delivery takes 2-4 business days across Bangladesh, and 1-2 days within Dhaka. Details: ' + web + '/pages/shipping-delivery';
+      } else if (/payment|cod|cash|পেমেন্ট|ক্যাশ/.test(q)) {
+        ans = bn
+          ? 'ক্যাশ অন ডেলিভারি (COD) সুবিধা রয়েছে; ডিজিটাল পেমেন্ট অপশন চেকআউটে দেখতে পাবেন।'
+          : 'Cash on delivery (COD) is available, and digital payment options are shown at checkout.';
+      } else if (/cancel|ক্যান্সেল|বাতিল/.test(q)) {
+        ans = bn
+          ? 'অর্ডার দেওয়ার ১ ঘণ্টার মধ্যে বাতিল করা যায়। এরপর সহায়তার জন্য যোগাযোগ করুন: ' + phone
+          : 'Orders can be cancelled within 1 hour of placing them. After that, please contact support at ' + phone + '.';
+      } else if (/warrant|ওয়ারেন্টি|গ্যারান্টি/.test(q)) {
+        ans = bn
+          ? 'প্রযোজ্য ক্ষেত্রে প্রোডাক্ট ব্র্যান্ডের ওয়ারেন্টি দ্বারা কভার করা হয়।'
+          : 'Products are covered by the brand warranty where applicable.';
+      } else {
+        ans = bn
+          ? 'আমি স্টোর পলিসি, রিটার্ন, ডেলিভারি, পেমেন্ট ও যোগাযোগ নিয়ে সাহায্য করতে পারি। সাধারণ প্রশ্নোত্তর: ' + web + '/pages/faq'
+          : 'I can help with store policies, returns, delivery, payments, and contact info. See our FAQ: ' + web + '/pages/faq';
+      }
+    } else if (leakedTool === 'order_management') {
+      const problem = /missing|wrong|damaged|broken|not received|did not|problem|issue|পার্সেল|পাচ্ছি|পাইনি|মিসিং|ভাঙা|ভুল|সমস্যা|প্রোডাক্ট নিয়েছেন/i.test(q);
+      if (problem) {
+        ans = bn
+          ? 'দুঃখিত যে আপনার অর্ডারে সমস্যা হয়েছে। অনুগ্রহ করে আপনার অর্ডার কোডটি শেয়ার করুন, যাতে আমরা বিষয়টি যাচাই করতে পারি। কোডটি না থাকলে আমাদের সাথে যোগাযোগ করুন: ' + phone + ' / ' + email
+          : 'Sorry to hear something went wrong with your order. Please share your order code so we can check it. If you do not have it, contact us at ' + phone + ' or ' + email + '.';
+      } else {
+        ans = bn
+          ? 'আপনার অর্ডার ট্র্যাক করতে অনুগ্রহ করে অর্ডার কোডটি জানান। কোডটি না থাকলে আমাদের সাথে যোগাযোগ করুন: ' + phone
+          : 'Please share your order code so I can track it. If you do not have it, contact us at ' + phone + '.';
+      }
+    } else if (leakedTool === 'product_discovery') {
       ans = bn
-        ? 'আপনি আমাদের সাথে এই নম্বরে যোগাযোগ করতে পারেন: ' + phone + '\\nইমেইল: ' + email + '\\nঠিকানা: ' + address + '\\nযোগাযোগের অন্যান্য উপায়: ' + web + '/pages/contact-us'
-        : 'You can reach us at ' + phone + ' or ' + email + '.\\nAddress: ' + address + '\\nMore ways to contact us: ' + web + '/pages/contact-us';
-    } else if (/authentic|genuine|fake|original|real|অথেন্টিক|আসল|নকল|খাঁটি/.test(q)) {
+        ? 'দুঃখিত, এখন সার্চটি সম্পন্ন করা গেল না। অনুগ্রহ করে প্রোডাক্টের নাম বা আপনি কী খুঁজছেন বলুন।'
+        : 'Sorry, I could not run that search just now. Could you tell me the product name or what you are looking for?';
+    } else if (leakedTool === 'get_current_offers') {
       ans = bn
-        ? 'হ্যাঁ, পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। বিস্তারিত: ' + web + '/pages/about-us'
-        : 'Yes - all Perfecto BD products are 100% authentic and sourced from official brands. Learn more: ' + web + '/pages/about-us';
-    } else if (/return|refund|exchange|রিটার্ন|ফেরত|বদল/.test(q)) {
+        ? 'দুঃখিত, এখন অফারগুলো লোড করা গেল না। একটু পরে আবার চেষ্টা করুন।'
+        : 'Sorry, I could not load the offers just now. Please try again in a moment.';
+    } else if (leakedTool === 'cart_specialist' || leakedTool === 'cart-add') {
       ans = bn
-        ? 'অব্যবহৃত ও খোলা না করা প্রোডাক্টের জন্য আমাদের ১৪ দিনের রিটার্ন পলিসি রয়েছে; রিফান্ড রিটার্ন পাওয়ার ৫-৭ কার্যদিবসের মধ্যে প্রসেস হয়। বিস্তারিত: ' + web + '/pages/returnpolicy'
-        : 'We have a 14-day return policy for unused, unopened products, and refunds are processed within 5-7 business days after we receive the return. Details: ' + web + '/pages/returnpolicy';
-    } else if (/free ship|free deliver|ফ্রি|ফ্রী|মুফত/.test(q)) {
-      ans = bn
-        ? 'বর্তমান অফার অনুযায়ী ৳১,২০০-এর বেশি অর্ডারে ফ্রি শিপিং প্রযোজ্য। বিস্তারিত: ' + web + '/pages/shipping-delivery'
-        : 'Free shipping applies on orders over ৳1,200 as part of our current promotion. Details: ' + web + '/pages/shipping-delivery';
-    } else if (/deliver|shipping|ship|ডেলিভারি|শিপিং|কবে/.test(q) && /cost|charge|fee|koto|কত|খরচ|চার্জ/.test(q)) {
-      ans = bn
-        ? 'ডেলিভারি চার্জ ' + (off ? '৳' + off : 'এলাকাভিত্তিক') + '। স্ট্যান্ডার্ড ডেলিভারি ২-৪ কার্যদিবস (ঢাকায় ১-২ দিন)। বিস্তারিত: ' + web + '/pages/shipping-delivery'
-        : 'Delivery charge is ' + (off ? '৳' + off : 'area-based') + '. Standard delivery takes 2-4 business days (1-2 days in Dhaka). Details: ' + web + '/pages/shipping-delivery';
-    } else if (/deliver|shipping|ship|ডেলিভারি|শিপিং|কবে/.test(q)) {
-      ans = bn
-        ? 'স্ট্যান্ডার্ড ডেলিভারি সারা বাংলাদেশে ২-৪ কার্যদিবস, ঢাকায় ১-২ দিন। বিস্তারিত: ' + web + '/pages/shipping-delivery'
-        : 'Standard delivery takes 2-4 business days across Bangladesh, and 1-2 days within Dhaka. Details: ' + web + '/pages/shipping-delivery';
-    } else if (/payment|cod|cash|পেমেন্ট|ক্যাশ/.test(q)) {
-      ans = bn
-        ? 'ক্যাশ অন ডেলিভারি (COD) সুবিধা রয়েছে; ডিজিটাল পেমেন্ট অপশন চেকআউটে দেখতে পাবেন।'
-        : 'Cash on delivery (COD) is available, and digital payment options are shown at checkout.';
-    } else if (/cancel|ক্যান্সেল|বাতিল/.test(q)) {
-      ans = bn
-        ? 'অর্ডার দেওয়ার ১ ঘণ্টার মধ্যে বাতিল করা যায়। এরপর সহায়তার জন্য যোগাযোগ করুন: ' + phone
-        : 'Orders can be cancelled within 1 hour of placing them. After that, please contact support at ' + phone + '.';
-    } else if (/warrant|ওয়ারেন্টি|গ্যারান্টি/.test(q)) {
-      ans = bn
-        ? 'প্রযোজ্য ক্ষেত্রে প্রোডাক্ট ব্র্যান্ডের ওয়ারেন্টি দ্বারা কভার করা হয়।'
-        : 'Products are covered by the brand warranty where applicable.';
+        ? 'দুঃখিত, এখন কার্ট আপডেট করা গেল না। একটু পরে আবার চেষ্টা করুন।'
+        : 'Sorry, I could not update the cart just now. Please try again in a moment.';
     } else {
       ans = bn
-        ? 'আমি স্টোর পলিসি, রিটার্ন, ডেলিভারি, পেমেন্ট ও যোগাযোগ নিয়ে সাহায্য করতে পারি। সাধারণ প্রশ্নোত্তর: ' + web + '/pages/faq'
-        : 'I can help with store policies, returns, delivery, payments, and contact info. See our FAQ: ' + web + '/pages/faq';
+        ? 'দুঃখিত, আমি এখনই এটি সম্পন্ন করতে পারলাম না। একটু পরে আবার চেষ্টা করুন।'
+        : 'Sorry, I could not complete that just now. Please try again in a moment.';
     }
   } catch (e) {
-    ans = 'I am sorry, I could not check that right now. You can reach us at +8801775-423477 or info@perfectobd.com.';
+    ans = bn
+      ? 'দুঃখিত, আমি এখনই এটি সম্পন্ন করতে পারলাম না। আমাদের সাথে যোগাযোগ করুন: +8801775-423477'
+      : 'Sorry, I could not complete that just now. You can reach us at +8801775-423477 or info@perfectobd.com.';
   }
   replyTxt = ans;
-  // A misroute guard replaces a deals reply the orchestrator already produced;
-  // drop any info-cards/suggestions it also built so the answer and the cards
-  // agree.
-  if (supportIntentGuard) { out.blocks = []; out.suggestions = []; }
+  // Any override replaces whatever reply/cards the orchestrator produced.
+  out.blocks = []; out.suggestions = [];
 }
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
