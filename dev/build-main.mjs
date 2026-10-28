@@ -380,16 +380,24 @@ const INTERNAL_IDENTIFIERS = /\\b(product_discovery|order_management|support_spe
 // "action":"cart-add", silently breaking the approval UI for every
 // multi-item cart-add whose approval payload mentions it.
 const scanText = replyTxt.replace(/META_[A-Z_]+:[^\\n]*\\n?/gi, '');
-if (
-  /^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(\\s*["'][\\s\\S]*["']\\s*\\)\\s*$/.test(replyTxt.trim()) ||
-  INTERNAL_IDENTIFIERS.test(scanText)
-) {
-  if (/support_specialist/.test(scanText)) {
-    replyTxt = "I'm sorry that didn't come through properly. You can reach Perfecto BD support at +8801775-423477 or info@perfectobd.com, and find more ways to contact us and our full policies here: https://perfectobd.com/pages/contact-us (FAQ: https://perfectobd.com/pages/faq). Could you rephrase your question so I can look it up for you?";
-  } else {
-    replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
-  }
+// Detect the leaked tool call, but do NOT just apologise: a leaked
+// support_specialist call is a real customer question that never ran. Record
+// its input and answer it deterministically further down (after the store
+// helpers exist) from the policy + live settings, instead of showing the
+// customer "I'm sorry that didn't come through properly".
+let leakedSupportInput = null;
+let otherLeak = false;
+const leakCall = replyTxt.trim().match(/^([a-zA-Z_][a-zA-Z0-9_]*)\\s*[({]\\s*(?:input\\s*:\\s*)?["']?([\\s\\S]*?)["']?\\s*[})]\\s*$/);
+if (leakCall) {
+  const tname = String(leakCall[1]).toLowerCase();
+  if (tname === 'support_specialist') leakedSupportInput = String(leakCall[2] || '').trim();
+  else otherLeak = true;
+} else if (INTERNAL_IDENTIFIERS.test(scanText)) {
+  if (/support_specialist/.test(scanText)) leakedSupportInput = '';
+  else otherLeak = true;
 }
+if (otherLeak) replyTxt = "Sorry, I had trouble putting that answer together - could you ask that again?";
+else if (leakedSupportInput !== null) replyTxt = '';
 // Gemini occasionally emits a mojibake rune (αº│) for ৳ — normalize it so the
 // price guard and currency formatter can see the real amounts.
 replyTxt = replyTxt.replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3');
@@ -1076,6 +1084,75 @@ try {
     }
   }
 } catch {}
+// Answer a leaked support_specialist call deterministically (see the detection
+// block near the top). The model wrote the call as text, so the specialist
+// never ran; build the real answer here from the store policy and live
+// contact/shipping settings so the customer's question is actually answered.
+if (leakedSupportInput !== null) {
+  let ans = '';
+  try {
+    const custMsg = String((($('Prepare Input').first().json || {}).chatInput) || '');
+    const bn = /[\\u0980-\\u09FF]/.test(custMsg);
+    const q = (leakedSupportInput + ' ' + custMsg).toLowerCase();
+    let settings = null;
+    try {
+      settings = await call(base + '/api/v3/business-settings?q=shipping_cost_admin,flat_rate_shipping_cost,shipping_type,contact_phone,contact_email,contact_address');
+    } catch {}
+    const sm = {};
+    if (settings && Array.isArray(settings.data)) {
+      for (const r of settings.data) { if (r && r.type && r.value != null && r.value !== '') sm[r.type] = r.value; }
+    }
+    const phone = sm.contact_phone || '+8801775-423477';
+    const email = sm.contact_email || 'info@perfectobd.com';
+    const address = sm.contact_address || 'Perfecto, Shop No: 14, 2nd Floor, Rankin Square Market, 32 Rankin St, Dhaka 1203';
+    const off = sm.shipping_cost_admin || (sm.flat_rate_shipping_cost && String(sm.flat_rate_shipping_cost) !== '0' ? sm.flat_rate_shipping_cost : null);
+    const web = 'https://perfectobd.com';
+    if (/contact|phone|email|address|hotline|human|speak|talk|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|কথা/.test(q)) {
+      ans = bn
+        ? 'আপনি আমাদের সাথে এই নম্বরে যোগাযোগ করতে পারেন: ' + phone + '\\nইমেইল: ' + email + '\\nঠিকানা: ' + address + '\\nযোগাযোগের অন্যান্য উপায়: ' + web + '/pages/contact-us'
+        : 'You can reach us at ' + phone + ' or ' + email + '.\\nAddress: ' + address + '\\nMore ways to contact us: ' + web + '/pages/contact-us';
+    } else if (/authentic|genuine|fake|original|real|অথেন্টিক|আসল|নকল|খাঁটি/.test(q)) {
+      ans = bn
+        ? 'হ্যাঁ, পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। বিস্তারিত: ' + web + '/pages/about-us'
+        : 'Yes - all Perfecto BD products are 100% authentic and sourced from official brands. Learn more: ' + web + '/pages/about-us';
+    } else if (/return|refund|exchange|রিটার্ন|ফেরত|বদল/.test(q)) {
+      ans = bn
+        ? 'অব্যবহৃত ও খোলা না করা প্রোডাক্টের জন্য আমাদের ১৪ দিনের রিটার্ন পলিসি রয়েছে; রিফান্ড রিটার্ন পাওয়ার ৫-৭ কার্যদিবসের মধ্যে প্রসেস হয়। বিস্তারিত: ' + web + '/pages/returnpolicy'
+        : 'We have a 14-day return policy for unused, unopened products, and refunds are processed within 5-7 business days after we receive the return. Details: ' + web + '/pages/returnpolicy';
+    } else if (/free ship|free deliver|ফ্রি|ফ্রী|মুফত/.test(q)) {
+      ans = bn
+        ? 'বর্তমান অফার অনুযায়ী ৳১,২০০-এর বেশি অর্ডারে ফ্রি শিপিং প্রযোজ্য। বিস্তারিত: ' + web + '/pages/shipping-delivery'
+        : 'Free shipping applies on orders over ৳1,200 as part of our current promotion. Details: ' + web + '/pages/shipping-delivery';
+    } else if (/deliver|shipping|ship|ডেলিভারি|শিপিং|কবে/.test(q) && /cost|charge|fee|koto|কত|খরচ|চার্জ/.test(q)) {
+      ans = bn
+        ? 'ডেলিভারি চার্জ ' + (off ? '৳' + off : 'এলাকাভিত্তিক') + '। স্ট্যান্ডার্ড ডেলিভারি ২-৪ কার্যদিবস (ঢাকায় ১-২ দিন)। বিস্তারিত: ' + web + '/pages/shipping-delivery'
+        : 'Delivery charge is ' + (off ? '৳' + off : 'area-based') + '. Standard delivery takes 2-4 business days (1-2 days in Dhaka). Details: ' + web + '/pages/shipping-delivery';
+    } else if (/deliver|shipping|ship|ডেলিভারি|শিপিং|কবে/.test(q)) {
+      ans = bn
+        ? 'স্ট্যান্ডার্ড ডেলিভারি সারা বাংলাদেশে ২-৪ কার্যদিবস, ঢাকায় ১-২ দিন। বিস্তারিত: ' + web + '/pages/shipping-delivery'
+        : 'Standard delivery takes 2-4 business days across Bangladesh, and 1-2 days within Dhaka. Details: ' + web + '/pages/shipping-delivery';
+    } else if (/payment|cod|cash|পেমেন্ট|ক্যাশ/.test(q)) {
+      ans = bn
+        ? 'ক্যাশ অন ডেলিভারি (COD) সুবিধা রয়েছে; ডিজিটাল পেমেন্ট অপশন চেকআউটে দেখতে পাবেন।'
+        : 'Cash on delivery (COD) is available, and digital payment options are shown at checkout.';
+    } else if (/cancel|ক্যান্সেল|বাতিল/.test(q)) {
+      ans = bn
+        ? 'অর্ডার দেওয়ার ১ ঘণ্টার মধ্যে বাতিল করা যায়। এরপর সহায়তার জন্য যোগাযোগ করুন: ' + phone
+        : 'Orders can be cancelled within 1 hour of placing them. After that, please contact support at ' + phone + '.';
+    } else if (/warrant|ওয়ারেন্টি|গ্যারান্টি/.test(q)) {
+      ans = bn
+        ? 'প্রযোজ্য ক্ষেত্রে প্রোডাক্ট ব্র্যান্ডের ওয়ারেন্টি দ্বারা কভার করা হয়।'
+        : 'Products are covered by the brand warranty where applicable.';
+    } else {
+      ans = bn
+        ? 'আমি স্টোর পলিসি, রিটার্ন, ডেলিভারি, পেমেন্ট ও যোগাযোগ নিয়ে সাহায্য করতে পারি। সাধারণ প্রশ্নোত্তর: ' + web + '/pages/faq'
+        : 'I can help with store policies, returns, delivery, payments, and contact info. See our FAQ: ' + web + '/pages/faq';
+    }
+  } catch (e) {
+    ans = 'I am sorry, I could not check that right now. You can reach us at +8801775-423477 or info@perfectobd.com.';
+  }
+  replyTxt = ans;
+}
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
 // token_usage stays null on this n8n version and that is not fixable in-workflow:
