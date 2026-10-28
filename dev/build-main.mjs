@@ -1143,7 +1143,7 @@ try {
       if (String(st && st.action && st.action.tool || '') !== 'support_specialist') continue;
       const o = st.observation;
       const s = typeof o === 'string' ? o : (o != null ? JSON.stringify(o) : '');
-      for (const m of (s.match(/https?:\\/\\/[^\\s)"']+/g) || [])) urls.add(m.replace(/[.,;:!?]+$/, ''));
+      for (const m of (s.match(/https?:\\/\\/[^\\s)"'\\\\<>]+/g) || [])) urls.add(m.replace(/[.,;:!?]+$/, ''));
     }
     for (const u of urls) {
       if (!replyTxt.includes(u)) replyTxt = replyTxt.trim() + '\\n' + u;
@@ -1163,11 +1163,14 @@ try {
   const offersRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'get_current_offers');
   const supportIntent0 = /authentic|genuine|fake|original|return|refund|exchange|deliver|shipping|ship|payment|cod|cash|cancel|warrant|contact|phone|email|address|hotline|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|অথেন্টিক|আসল|নকল|খাঁটি|রিটার্ন|ফেরত|বদল|ডেলিভারি|শিপিং|কবে|পেমেন্ট|ক্যাশ|ক্যান্সেল|বাতিল|ওয়ারেন্টি|গ্যারান্টি|কথা/i.test(cm0);
   const authIntent0 = /authentic|genuine|fake|অথেন্টিক|আসল|নকল|খাঁটি/i.test(cm0);
-  supportIntentGuard = (!leakedTool && !supportRan0 && (authIntent0 || (offersRan0 && supportIntent0)));
+  const dermaIntent0 = /dermatolog|doctor|appointment|consultation|skin consult|ডার্মাটোলজ|ডাক্তার|অ্যাপয়েন্ট|পরামর্শ/i.test(cm0);
+  supportIntentGuard = (!leakedTool && !supportRan0 && (authIntent0 || dermaIntent0 || (offersRan0 && supportIntent0)));
   // A reported order problem with no order code in the customer's own message:
   // if the specialist did not actually find an order, answer deterministically
   // (where to find the code + contact) instead of a bare "provide your code".
-  const orderProblem0 = /missing|wrong|damaged|broken|not received|did not|problem|issue|পার্সেল|পাইনি|মিসিং|ভাঙা|ভুল|সমস্যা|প্রোডাক্ট নিয়েছেন/i.test(cm0);
+  const orderCtx0 = /order|parcel|delivery|delivered|item|product|অর্ডার|পার্সেল|প্রোডাক্ট|ডেলিভারি|পণ্য/i.test(cm0);
+  const orderIssue0 = /missing|wrong|damaged|broken|not received|did not receive|problem|issue|মিসিং|পাইনি|ভাঙা|ভুল|সমস্যা|পাচ্ছি|প্রোডাক্ট নিয়েছেন/i.test(cm0);
+  const orderProblem0 = orderCtx0 && orderIssue0;
   const hasCode0 = /\\b(?=[A-Za-z0-9]*\\d)[A-Za-z0-9]{8,}\\b/.test(cm0);
   const orderFound0 = steps0.some((st) => {
     if (String(st && st.action && st.action.tool || '') !== 'order_management') return false;
@@ -1198,7 +1201,11 @@ if (leakedTool || supportIntentGuard || orderProblemGuard) {
     const off = sm.shipping_cost_admin || (sm.flat_rate_shipping_cost && String(sm.flat_rate_shipping_cost) !== '0' ? sm.flat_rate_shipping_cost : null);
     const web = 'https://perfectobd.com';
     if (supportIntentGuard || leakedTool === 'support_specialist') {
-      if (/contact|phone|email|address|hotline|human|speak|talk|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|কথা/.test(q)) {
+      if (/dermatolog|doctor|appointment|consultation|skin consult|ডার্মাটোলজ|ডাক্তার|অ্যাপয়েন্ট|পরামর্শ/.test(q)) {
+        ans = bn
+          ? 'পারফেক্টো বিডি-তে ডার্মাটোলজিস্ট সাপোর্ট রয়েছে — সার্টিফাইড ডাক্তাররা আপনার ত্বকের সমস্যা নিয়ে পরামর্শ দিতে পারবেন। অ্যাপয়েন্টমেন্ট বুক করুন এখানে: ' + web + '/doctors\\nসাহায্যের জন্য যোগাযোগ করুন: ' + phone + ' (সকাল ১০টা - রাত ৮টা) / ' + email
+          : 'Perfecto BD offers Dermatologist Support - certified doctors can advise on your skin concern. Book an appointment here: ' + web + '/doctors\\nFor help booking, contact us at ' + phone + ' (10am-8pm) or ' + email + '.';
+      } else if (/contact|phone|email|address|hotline|human|speak|talk|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|কথা/.test(q)) {
         ans = bn
           ? 'আপনি আমাদের সাথে এই নম্বরে যোগাযোগ করতে পারেন: ' + phone + '\\nইমেইল: ' + email + '\\nঠিকানা: ' + address + '\\nযোগাযোগের অন্যান্য উপায়: ' + web + '/pages/contact-us'
           : 'You can reach us at ' + phone + ' or ' + email + '.\\nAddress: ' + address + '\\nMore ways to contact us: ' + web + '/pages/contact-us';
