@@ -918,6 +918,34 @@ if ((doCart || doCheckout) && userId) {
       // what the model said - never signal checkout for nothing to buy.
       if (doCheckout) blocks.push({ type: 'checkout', items: rows, total, count });
       replyTxt = guardTotal(replyTxt, total);
+      // A single cart-add: quote ITS real cart price, not a price the model
+      // invented. Verified prod 4467/4487: the reply said ৳1,450 for product
+      // 784 while the cart line (and the store) was ৳1,500. Only correct when
+      // the reply carries exactly one amount that matches no real cart value,
+      // so a legitimate item/total/line price is never touched.
+      try {
+        const addSteps = ($('AI Agent').first().json.intermediateSteps || []).filter((st) => String(st && st.action && st.action.tool || '') === 'cart-add');
+        if (addSteps.length === 1) {
+          const ti = addSteps[0].action.toolInput || {};
+          const pid = Number(ti.product_id) || 0;
+          const vname = String(ti.variant || '').trim();
+          if (pid) {
+            const added = rows.find((r) => r.product_id === pid && (!vname || String(r.variant_name || '') === vname)) || rows.find((r) => r.product_id === pid);
+            if (added && added.price > 0) {
+              const legit = new Set([total]);
+              for (const r of rows) { legit.add(r.price); legit.add(r.price * r.quantity); }
+              const re = /৳\\s*([\\d,]+(?:\\.\\d{1,2})?)/g;
+              const found = [];
+              let m;
+              while ((m = re.exec(replyTxt))) {
+                const v = parseFloat(m[1].replace(/,/g, ''));
+                if (Number.isFinite(v) && !legit.has(v)) found.push({ text: m[0], v });
+              }
+              if (found.length === 1) replyTxt = replyTxt.replace(found[0].text, fmtTaka(added.price));
+            }
+          }
+        }
+      } catch {}
     }
   } catch {}
 }
