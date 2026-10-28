@@ -1088,9 +1088,26 @@ try {
 // block near the top). The model wrote the call as text, so the specialist
 // never ran; build the real answer here from the store policy and live
 // contact/shipping settings so the customer's question is actually answered.
-if (leakedSupportInput !== null) {
+// Same guard also rescues a misroute: if the customer clearly asked a support
+// question but the orchestrator ran get_current_offers instead (and support
+// never ran), answer the support question rather than showing deals.
+let supportIntentGuard = false;
+try {
+  const cm0 = String((($('Prepare Input').first().json || {}).chatInput) || '');
+  const steps0 = $('AI Agent').first().json.intermediateSteps || [];
+  const supportRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'support_specialist');
+  const offersRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'get_current_offers');
+  const supportIntent0 = /authentic|genuine|fake|original|return|refund|exchange|deliver|shipping|ship|payment|cod|cash|cancel|warrant|contact|phone|email|address|hotline|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|অথেন্টিক|আসল|নকল|খাঁটি|রিটার্ন|ফেরত|বদল|ডেলিভারি|শিপিং|কবে|পেমেন্ট|ক্যাশ|ক্যান্সেল|বাতিল|ওয়ারেন্টি|গ্যারান্টি|কথা/i.test(cm0);
+  // Authenticity asks are unambiguous even when the model mangles the Bengali
+  // and routes to product_discovery/offers instead of support, so allow that
+  // one intent to override any non-support route.
+  const authIntent0 = /authentic|genuine|fake|অথেন্টিক|আসল|নকল|খাঁটি/i.test(cm0);
+  supportIntentGuard = (leakedSupportInput === null && !supportRan0 && (authIntent0 || (offersRan0 && supportIntent0)));
+} catch {}
+if (leakedSupportInput !== null || supportIntentGuard) {
   let ans = '';
   try {
+    if (leakedSupportInput === null) leakedSupportInput = '';
     const custMsg = String((($('Prepare Input').first().json || {}).chatInput) || '');
     const bn = /[\\u0980-\\u09FF]/.test(custMsg);
     const q = (leakedSupportInput + ' ' + custMsg).toLowerCase();
@@ -1152,6 +1169,10 @@ if (leakedSupportInput !== null) {
     ans = 'I am sorry, I could not check that right now. You can reach us at +8801775-423477 or info@perfectobd.com.';
   }
   replyTxt = ans;
+  // A misroute guard replaces a deals reply the orchestrator already produced;
+  // drop any info-cards/suggestions it also built so the answer and the cards
+  // agree.
+  if (supportIntentGuard) { out.blocks = []; out.suggestions = []; }
 }
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
