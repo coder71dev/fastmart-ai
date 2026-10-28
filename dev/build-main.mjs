@@ -1086,6 +1086,7 @@ try {
 // build a real answer here instead of showing the customer a canned apology.
 // Covers order problems/tracking, product search, offers, cart and support.
 let supportIntentGuard = false;
+let orderProblemGuard = false;
 try {
   const cm0 = String((($('Prepare Input').first().json || {}).chatInput) || '');
   const steps0 = $('AI Agent').first().json.intermediateSteps || [];
@@ -1094,8 +1095,20 @@ try {
   const supportIntent0 = /authentic|genuine|fake|original|return|refund|exchange|deliver|shipping|ship|payment|cod|cash|cancel|warrant|contact|phone|email|address|hotline|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|অথেন্টিক|আসল|নকল|খাঁটি|রিটার্ন|ফেরত|বদল|ডেলিভারি|শিপিং|কবে|পেমেন্ট|ক্যাশ|ক্যান্সেল|বাতিল|ওয়ারেন্টি|গ্যারান্টি|কথা/i.test(cm0);
   const authIntent0 = /authentic|genuine|fake|অথেন্টিক|আসল|নকল|খাঁটি/i.test(cm0);
   supportIntentGuard = (!leakedTool && !supportRan0 && (authIntent0 || (offersRan0 && supportIntent0)));
+  // A reported order problem with no order code in the customer's own message:
+  // if the specialist did not actually find an order, answer deterministically
+  // (where to find the code + contact) instead of a bare "provide your code".
+  const orderProblem0 = /missing|wrong|damaged|broken|not received|did not|problem|issue|পার্সেল|পাইনি|মিসিং|ভাঙা|ভুল|সমস্যা|প্রোডাক্ট নিয়েছেন/i.test(cm0);
+  const hasCode0 = /\\b(?=[A-Za-z0-9]*\\d)[A-Za-z0-9]{8,}\\b/.test(cm0);
+  const orderFound0 = steps0.some((st) => {
+    if (String(st && st.action && st.action.tool || '') !== 'order_management') return false;
+    const o = st.observation;
+    const s = typeof o === 'string' ? o : (o != null ? JSON.stringify(o) : '');
+    return /"has_order"\\s*:\\s*true/i.test(s) || /META_ORDER_JSON/i.test(s);
+  });
+  orderProblemGuard = (!leakedTool && orderProblem0 && !hasCode0 && !orderFound0);
 } catch {}
-if (leakedTool || supportIntentGuard) {
+if (leakedTool || supportIntentGuard || orderProblemGuard) {
   let custMsg = '';
   try { custMsg = String((($('Prepare Input').first().json || {}).chatInput) || ''); } catch {}
   const bn = /[\\u0980-\\u09FF]/.test(custMsg);
@@ -1157,16 +1170,16 @@ if (leakedTool || supportIntentGuard) {
           ? 'আমি স্টোর পলিসি, রিটার্ন, ডেলিভারি, পেমেন্ট ও যোগাযোগ নিয়ে সাহায্য করতে পারি। সাধারণ প্রশ্নোত্তর: ' + web + '/pages/faq'
           : 'I can help with store policies, returns, delivery, payments, and contact info. See our FAQ: ' + web + '/pages/faq';
       }
-    } else if (leakedTool === 'order_management') {
+    } else if (orderProblemGuard || leakedTool === 'order_management') {
       const problem = /missing|wrong|damaged|broken|not received|did not|problem|issue|পার্সেল|পাচ্ছি|পাইনি|মিসিং|ভাঙা|ভুল|সমস্যা|প্রোডাক্ট নিয়েছেন/i.test(q);
       if (problem) {
         ans = bn
-          ? 'দুঃখিত যে আপনার অর্ডারে সমস্যা হয়েছে। অনুগ্রহ করে আপনার অর্ডার কোডটি শেয়ার করুন, যাতে আমরা বিষয়টি যাচাই করতে পারি। কোডটি না থাকলে আমাদের সাথে যোগাযোগ করুন: ' + phone + ' / ' + email
-          : 'Sorry to hear something went wrong with your order. Please share your order code so we can check it. If you do not have it, contact us at ' + phone + ' or ' + email + '.';
+          ? 'দুঃখিত যে আপনার অর্ডারে সমস্যা হয়েছে। আপনার অর্ডার কোডটি অর্ডার করার সময় পাঠানো এসএমএস বা ইমেইলে, অথবা আপনার অ্যাকাউন্টের অর্ডার হিস্ট্রিতে দেখতে পাবেন।\\nকোডটি পাওয়ার পর আমাদের সাথে যোগাযোগ করুন:\\nফোন: ' + phone + '\\nইমেইল: ' + email
+          : 'Sorry to hear something went wrong with your order. You can find your order code in the SMS or email sent after you placed the order, or in your order history in your account.\\nOnce you have it, contact us:\\nPhone: ' + phone + '\\nEmail: ' + email;
       } else {
         ans = bn
-          ? 'আপনার অর্ডার ট্র্যাক করতে অনুগ্রহ করে অর্ডার কোডটি জানান। কোডটি না থাকলে আমাদের সাথে যোগাযোগ করুন: ' + phone
-          : 'Please share your order code so I can track it. If you do not have it, contact us at ' + phone + '.';
+          ? 'আপনার অর্ডার কোডটি অর্ডার করার সময় পাঠানো এসএমএস বা ইমেইলে, অথবা আপনার অ্যাকাউন্টের অর্ডার হিস্ট্রিতে দেখতে পাবেন।\\nনা পেলে আমাদের সাথে যোগাযোগ করুন:\\nফোন: ' + phone
+          : 'You can find your order code in the SMS or email sent after you placed the order, or in your order history in your account.\\nIf you cannot find it, contact us at ' + phone + '.';
       }
     } else if (leakedTool === 'product_discovery') {
       ans = bn
@@ -1192,7 +1205,10 @@ if (leakedTool || supportIntentGuard) {
   }
   replyTxt = ans;
   // Any override replaces whatever reply/cards the orchestrator produced.
-  out.blocks = []; out.suggestions = [];
+  out.blocks = [];
+  out.suggestions = (orderProblemGuard || leakedTool === 'order_management')
+    ? (bn ? ['আমার অর্ডার ট্র্যাক করুন', 'সাপোর্টে যোগাযোগ করুন'] : ['Track my order', 'Contact support'])
+    : [];
 }
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
