@@ -277,7 +277,7 @@ if (actionLine) parts.push(actionLine);
 // Decided in code (see LANG_DETECT) rather than left to the model's own
 // judgement, which got Banglish wrong live on 2026-10-29.
 if (looksBengali(msgRaw)) {
-  parts.push('CUSTOMER LANGUAGE: Bengali. Write your ENTIRE reply in Bengali script (বাংলা) - not English and not romanized Banglish - even when a specialist answered in English. When you call a specialist, end its task with "(reply in Bengali)".');
+  parts.push('CUSTOMER LANGUAGE: Bengali. Write your ENTIRE reply in Bengali script (বাংলা) - not English and not romanized Banglish - even when a specialist answered in English. When you call a specialist, end its task with "(reply in Bengali)". Write the META_SUGGESTIONS chips in Bengali too.');
 }
 
 const ctx ='CURRENT SHOPPING CONTEXT (authoritative - trust this over conversation history):\\n' + parts.join('\\n');
@@ -733,6 +733,14 @@ try {
     }
   }
 } catch {}
+// A bare greeting is not a recommendation turn: live 2026-10-29 one "hello"
+// got the skin/concern/budget form and two other "hello"s did not. Drop the
+// ask when the message is only a greeting and no specialist ran.
+try {
+  const greet = String((($('Prepare Input').first().json || {}).chatInput) || '').trim().toLowerCase();
+  const ranTool = ($('AI Agent').first().json.intermediateSteps || []).length > 0;
+  if (!ranTool && /^(hi+|hello+|hey+|hekko|helo|hlw|salam|assalamu ?alaikum|as-?salamu ?alaikum|good (morning|afternoon|evening)|হাই|হ্যালো|আসসালামু আলাইকুম)[\\s!.,?]*$/i.test(greet)) profileAsk = [];
+} catch {}
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
 // product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
@@ -1136,7 +1144,13 @@ out.suggestions = (wantsVariant || wantsApproval || doCheckout || wantsProfileAs
 // variant-picker/approval/checkout turns (their own CTA already carries the
 // turn) and when the reply already ends with a question mark (the model
 // asked something itself - a second question right after would read oddly).
-if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !/[?\uff1f]\\s*$/.test(replyTxt.trim())) {
+// "Already asks" = a question mark anywhere in the prose, or the prose names
+// the skin-type field itself. Live 2026-10-29 the model asked "...and your
+// budget? 😊" - the emoji after the "?" beat the old ends-with-"?" check, so
+// the customer got the model's question, this appended one AND the form.
+const proseOnly = replyTxt.replace(/META_[A-Z_]+:[^\\n]*\\n?/gi, '').replace(/\\[BLOCK[^\\]]*\\]/gi, '');
+const proseAsks = /[?？]/.test(proseOnly) || /skin type|স্কিন টাইপ|ত্বকের ধরন/i.test(proseOnly);
+if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !proseAsks) {
   const joinFields = (arr, and) => (arr.length === 1 ? arr[0] : (arr.length === 2 ? arr[0] + and + arr[1] : arr.slice(0, -1).join(', ') + ',' + and + arr[arr.length - 1]));
   // Appending a hardcoded ENGLISH question onto an otherwise-Bengali reply was
   // its own live bug (2026-10-19, alongside the Banglish-answered-in-English
