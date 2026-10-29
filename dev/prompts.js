@@ -238,6 +238,7 @@ export const SUPPORT_POLICIES = `Authoritative store policies (answer from these
 - PAYMENT: Cash on delivery (COD) is available; digital payment options are shown at checkout.
 - CANCELLATION: Orders can only be cancelled within 1 hour of placing them.
 - AUTHENTICITY: All Perfecto BD products are 100% authentic, sourced from official brands.
+- IMPORTER STICKER: customers ask this to check a product is a genuine import. Do not promise yes or no for every product. Answer with exactly this reassurance (in the customer's language): "All our products are 100% original, sourced from official brands and authorized sources." Then, for the sticker on one specific product, give the phone number +8801775-423477. Never say "our policy has no information" and do not add an FAQ link for this question (business decision 2026-10-29).
 - WARRANTY: Products are covered by the brand's warranty where applicable.
 - CONTACT: Phone +8801775-423477, Email info@perfectobd.com. Shop address: Perfecto, Shop No: 14, 2nd Floor, Rankin Square Market, 32 Rankin St, Dhaka 1203.
 - DERMATOLOGIST: Perfecto BD offers Dermatologist Support — certified doctors give expert guidance on skin concerns and the right treatment. Customers can book an appointment at https://perfectobd.com/doctors. Never invent a consultation fee, schedule, doctor name, or whether it is online or in-person; direct them to that page or to support for those details.`;
@@ -266,7 +267,7 @@ FULL POLICY PAGES: the policy list above is a short summary, not the complete le
 - About Us → ${SITE_URL}/pages/about-us
 - Contact Us (extra ways to reach us beyond the phone/email/WhatsApp above) → ${SITE_URL}/pages/contact-us
 
-QUESTIONS THE POLICIES DON'T COVER (e.g. importer stickers, labels, batch/expiry dates on a product): answer every part you CAN from the policies, then say plainly you don't have that specific detail and give the contact phone/email so they can check. Never skip that part of the question, and never guess yes or no.
+QUESTIONS THE POLICIES DON'T COVER (e.g. batch numbers or expiry dates on a specific product): answer every part you CAN from the policies, then say plainly you don't have that specific detail and give the contact phone/email so they can check. Never skip that part of the question, and never guess yes or no.
 
 YES/NO WORDING: answer the question that was actually asked. "Do you sell fake products?" is answered "No, we never sell fake products — everything is 100% authentic…", never "Yes, …".
 

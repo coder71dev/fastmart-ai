@@ -1281,12 +1281,20 @@ if (leakedTool || supportIntentGuard || orderProblemGuard) {
         ans = bn
           ? 'আপনি আমাদের সাথে এই নম্বরে যোগাযোগ করতে পারেন: ' + phone + '\\nইমেইল: ' + email + '\\nঠিকানা: ' + address + '\\nযোগাযোগের অন্যান্য উপায়: ' + web + '/pages/contact-us'
           : 'You can reach us at ' + phone + ' or ' + email + '.\\nAddress: ' + address + '\\nMore ways to contact us: ' + web + '/pages/contact-us';
-      } else if (/sticker|importer|import|label|seal|batch|expiry|expire|mfg|স্টিকার|ইমপোর্টার|লেবেল|মেয়াদ/.test(q)) {
-        // Not in the policy list, so never claim either way - live 2026-10-29
-        // this question got a generic "see our FAQ" that ignored it entirely.
+      } else if (/sticker|importer|import|স্টিকার|ইমপোর্টার|ইম্পোর্টার/.test(q)) {
+        // Business decision 2026-10-29 (SUPPORT_POLICIES IMPORTER STICKER):
+        // lead with the authenticity reassurance the customer is really after,
+        // promise nothing per product, and give the phone for a specific one.
+        // No "our policy has no information", no FAQ link.
         ans = bn
-          ? 'প্রতিটি প্রোডাক্টের ইমপোর্টার স্টিকার বা লেবেলের তথ্য এই মুহূর্তে আমার কাছে নেই। পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। নির্দিষ্ট প্রোডাক্টের স্টিকার সম্পর্কে জানতে যোগাযোগ করুন:\\nফোন: ' + phone + '\\nইমেইল: ' + email
-          : 'I don\\'t have importer sticker or label details for each product right now. All Perfecto BD products are 100% authentic and sourced from official brands. For sticker details on a specific product, contact us:\\nPhone: ' + phone + '\\nEmail: ' + email;
+          ? 'আমাদের সব প্রোডাক্ট ১০০% অরিজিনাল, অফিশিয়াল ব্র্যান্ড ও অনুমোদিত সোর্স থেকে আনা। কোনো নির্দিষ্ট প্রোডাক্টের ইম্পোর্টার স্টিকার সম্পর্কে জানতে আমাদের কল করুন: ' + phone
+          : 'All our products are 100% original, sourced from official brands and authorized sources. To check the importer sticker on a specific product, call us at ' + phone + '.';
+      } else if (/label|seal|batch|expiry|expire|mfg|লেবেল|মেয়াদ/.test(q)) {
+        // Batch/expiry details are NOT in the policy list, so never claim
+        // either way - point to support for the specific product.
+        ans = bn
+          ? 'নির্দিষ্ট প্রোডাক্টের ব্যাচ বা মেয়াদের তথ্য এই মুহূর্তে আমার কাছে নেই। পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। বিস্তারিত জানতে যোগাযোগ করুন:\\nফোন: ' + phone + '\\nইমেইল: ' + email
+          : 'I don\\'t have batch or expiry details for a specific product right now. All Perfecto BD products are 100% authentic and sourced from official brands. For details, contact us:\\nPhone: ' + phone + '\\nEmail: ' + email;
       } else if (/authentic|genuine|fake|original|real|duplicate|copy|asol|ashol|nokol|nakol|অথেন্টিক|আসল|নকল|খাঁটি/.test(q)) {
         // "Do you sell FAKE products?" must not be answered "Yes - ..." (live
         // 2026-10-29) - say "No" to the fake question, and never lead with a
