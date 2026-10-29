@@ -10,8 +10,6 @@ dev/out/
 # Database backups (local artifacts)
 backups/
 
-# Generated token-cost report (regenerate with node dev/token-cost.mjs)
-token-cost.html
 
 # Tool junk
 .commandcode/

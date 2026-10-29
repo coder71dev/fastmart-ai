@@ -63,8 +63,7 @@ React widget (kept) ──webhook──► n8n: AI Agent ──► sub-workflows
 | `wf4-agent-chat.json` | **Production webhook workflow** (agent + guest cart + blocks JSON) | ✅ Done — ready to import |
 | `wf5-test-bucket.json` | Test-bucket helper workflow | ✅ Done — ready to import |
 | `scratchpad-verify.mjs` | End-to-end verifier for the imported webhook | ✅ Done |
-| `dev/build-collector.mjs` | Builds the `token-usage collector` workflow — one row per LLM call into the `token_usage` Data Table | ✅ Done (2026-09-22) |
-| `dev/token-cost.mjs` | Renders the `token_usage` Data Table as `token-cost.html` — datatable + totals footer | ✅ Done (2026-09-22) |
+| `dev/build-collector.mjs` + `dev/token-cost.mjs` | `token-usage collector` workflow + its HTML report | 🗑️ Removed (2026-10-29) — replaced by `token-cost-log`, see below |
 | `perfecto-ai-demo.html` | **Standalone chat SPA** — n8n agent brain + live store API, all 8 contract block types | ✅ Done (2026-09-21) — hosting not wired yet |
 
 ---
@@ -142,7 +141,9 @@ Traced all 10 turns of one real session from n8n's Postgres (`fastmart_ai.chat_m
 - **Variant products could not be added at all.** `cart-add` never passed the store's `variant` param, so any size-option product 500s with *"Attempt to read property price on null"*. It now passes the option **name** (`45ml`), the search result marks which products need a chosen option, and the agent asks the customer when they haven't named one. Also fixed: replies used markdown tables, which the SPA renders as raw `|` (its formatter only handles `**bold**`) — the prompt now forbids tables.
 - **Re-verified end-to-end:** tracking (no city, correct totals), reorder (*Sheglam Good Grip 45ml* added ৳1,250 — matches the store cart), variant add (asks 15ml/45ml, then adds), non-variant add unaffected, eval battery **10/10**.
 
-### Token usage & cost in a Data Table (2026-09-22)
+### Token usage & cost in a Data Table (2026-09-22) — removed 2026-10-29
+> **Removed 2026-10-29.** The collector crashed out of memory 9 runs in a row (2026-10-27 16:00 → 10-28 08:00 UTC) and was switched off. Root cause: its fetch read *every* workflow's executions, including its own saved runs, each of which stored the batch of blobs it had fetched — so each pass pulled copies of copies; and since the cursor only advanced after a successful run, one bad batch crashed it forever. `token-cost-log` (`dev/build-token-cost-log.mjs`, 2026-10-22) already logs the same per-execution token totals plus cost, filtered to the chat workflows, and had run 338 times with no failure — so two workflows scanning the same history was redundant. Deleted the builder and `dev/token-cost.mjs`; archived the workflow on the instance (reversible from n8n's archived list); the `token_usage` Data Table is left in place, not deleted. The notes below are kept as history.
+
 **`token-usage collector`** workflow + **`token_usage`** Data Table — one row per LLM call (execution + parent, conversation, workflow, run mode, model node, call index, prompt/completion/total tokens, timestamp) — rendered by `dev/token-cost.mjs` into `token-cost.html`: a single-file datatable with a **totals footer**.
 - **Why a collector, not a node in the graph:** per-call usage is unreachable in-run. Proved with a throwaway probe workflow — `$('OpenAI Chat Model').first()` / `.all()`, `$items(...)` and `$node[...]` all throw *No data found from `main` input*, and the Agent emits no `tokenUsage`. So the collector reads n8n's own Postgres and decodes the flatted run data, with a **targeted** decode (a full recursive expansion of 200 executions blew the task runner's heartbeat).
 - **Two bugs only verification caught:** un-dereferenced flatted field *values* turned `conversation_id` into table indices (`172`) and every specialist's `parent_execution_id` into `14`. Fixed → all 309 sub-workflow rows now attribute to their parent's conversation (0 orphans).

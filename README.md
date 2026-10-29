@@ -216,8 +216,7 @@ Nothing is lost by a redeploy; `sync.mjs` is a patch, not a wipe. The only destr
 | `dev/eval-harness.mjs` | Eval battery — 14 test cases (`--group hitl` for the human-in-the-loop ones) |
 | `dev/prod-bench.mjs` | Latency and token cost benchmark |
 | `dev/model-config.mjs` | Swap models without editing workflow code |
-| `dev/build-collector.mjs` | Builds the token-usage collector workflow |
-| `dev/token-cost.mjs` | Renders token usage as an HTML report |
+| `dev/build-token-cost-log.mjs` | Builds the `token-cost-log` workflow — real tokens + cost per chat execution, into the `token_cost_log` table |
 | `perfecto-ai-demo.html` | Standalone chat SPA — one file, no build |
 | `PLAN.md` | Full build history |
 
