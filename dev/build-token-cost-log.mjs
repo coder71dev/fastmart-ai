@@ -377,6 +377,10 @@ if (SHEET_URL) {
       // tab already exists and Google answers "already exists" - expected, so
       // that one error is let through. A real problem (bad login, no access)
       // still fails loudly at Append To Sheet right after.
+      // alwaysOutputData is REQUIRED: live 2026-10-29 (exec 4714) the
+      // "already exists" case returned zero items, so Month Rows and Append To
+      // Sheet were silently skipped and the run still reported success.
+      // Month Rows reads its rows from Each Month, not from this node's output.
       parameters: {
         resource: 'sheet',
         operation: 'create',
@@ -390,6 +394,7 @@ if (SHEET_URL) {
       typeVersion: 4.7,
       position: pos(1540, 100),
       onError: 'continueRegularOutput',
+      alwaysOutputData: true,
       credentials: { googleSheetsOAuth2Api: SHEETS_CRED },
     }),
   );
