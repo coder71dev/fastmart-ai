@@ -216,7 +216,7 @@ Nothing is lost by a redeploy; `sync.mjs` is a patch, not a wipe. The only destr
 | `dev/eval-harness.mjs` | Eval battery — 14 test cases (`--group hitl` for the human-in-the-loop ones) |
 | `dev/prod-bench.mjs` | Latency and token cost benchmark |
 | `dev/model-config.mjs` | Swap models without editing workflow code |
-| `dev/build-token-cost-log.mjs` | Builds the `token-cost-log` workflow — real tokens + cost per chat execution, into the `token_cost_log` table |
+| `dev/build-token-cost-log.mjs` | Builds the `token-cost-log` workflow — real tokens + cost per chat execution, into the `token_cost_log` table. Set `TOKEN_SHEET_URL` (and optionally `TOKEN_SHEET_TAB`, default `token_cost_log`) in `.n8n-credentials.json` to also append each new row to a Google Sheet; deploy with `node dev/build-token-cost-log.mjs && node dev/deploy.mjs dev/out/tokenCostLog.json` |
 | `perfecto-ai-demo.html` | Standalone chat SPA — one file, no build |
 | `PLAN.md` | Full build history |
 

@@ -71,6 +71,29 @@ const WORKFLOW_IDS = [
   '84zzrn7RoIof8lhC', // specialist-support
 ];
 
+// Readable names for the Sheet (token_cost_log.workflow_name holds the id).
+const WORKFLOW_NAMES = {
+  oAlPFsGVYAlhZami: 'agent-chat',
+  DQ39wgxL370oX15x: 'product-discovery',
+  '1epRnYl6wTXaIxMf': 'cart',
+  TMlk5KZqAZB5ysy7: 'orders',
+  '84zzrn7RoIof8lhC': 'support',
+};
+
+// Optional Google Sheets copy of every new log row. Postgres stays the source
+// of truth: the Sheet step runs AFTER Insert Log Row and only receives the rows
+// that insert actually wrote (ON CONFLICT DO NOTHING returns none for a
+// duplicate), so a retried batch can never double-write the Sheet. Leave
+// TOKEN_SHEET_URL unset and the workflow builds exactly as before - no Sheet
+// steps - so a deploy on an instance without the setting keeps logging to
+// Postgres instead of failing on a blank document id.
+const SHEET_URL = process.env.TOKEN_SHEET_URL || credConfig.TOKEN_SHEET_URL || '';
+const SHEET_TAB = process.env.TOKEN_SHEET_TAB || credConfig.TOKEN_SHEET_TAB || 'token_cost_log';
+const SHEETS_CRED = {
+  id: process.env.SHEETS_CRED_ID || credConfig.SHEETS_CRED_ID || 'mHnsWMe8svjYfKaa',
+  name: process.env.SHEETS_CRED_NAME || credConfig.SHEETS_CRED_NAME || 'Google Sheets account',
+};
+
 const node = (o) => ({ id: o.id || stableId(o.name), disabled: false, ...o });
 const pos = (x, y) => [x, y];
 
@@ -301,6 +324,73 @@ connections['Cleanup Old Rows'] = { main: [[{ node: 'Read New Executions', type:
 connections['Read New Executions'] = { main: [[{ node: 'Extract Tokens + Cost', type: 'main', index: 0 }]] };
 connections['Extract Tokens + Cost'] = { main: [[{ node: 'Insert Log Row', type: 'main', index: 0 }]] };
 
+// One row per newly logged execution, in the column order the Sheet shows.
+// Times in Dhaka so they read naturally; cost rounded for a spreadsheet.
+const SHEET_ROW_CODE = `
+const NAMES = ${JSON.stringify(WORKFLOW_NAMES)};
+const fmt = (v) => {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d)) return String(v);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d).replace(',', '');
+};
+return $input.all().map((i) => {
+  const j = i.json || {};
+  return { json: {
+    'Started (Dhaka)': fmt(j.started_at),
+    'Workflow': NAMES[j.workflow_name] || String(j.workflow_name || ''),
+    'Status': j.status || '',
+    'Mode': j.mode || '',
+    'Provider': j.provider || '',
+    'Model': j.model || '',
+    'Input tokens': Number(j.input_tokens) || 0,
+    'Cached tokens': j.cached_tokens == null ? '' : Number(j.cached_tokens),
+    'Output tokens': Number(j.output_tokens) || 0,
+    'Total tokens': Number(j.total_tokens) || 0,
+    'Cost (USD)': j.cost_usd == null ? '' : Math.round(Number(j.cost_usd) * 1e6) / 1e6,
+    'Execution ID': Number(j.execution_id) || '',
+    'Parent execution ID': j.parent_execution_id == null ? '' : Number(j.parent_execution_id),
+  } };
+});
+`.trim();
+const SHEET_COLUMNS = ['Started (Dhaka)', 'Workflow', 'Status', 'Mode', 'Provider', 'Model', 'Input tokens', 'Cached tokens', 'Output tokens', 'Total tokens', 'Cost (USD)', 'Execution ID', 'Parent execution ID'];
+
+if (SHEET_URL) {
+  nodes.push(
+    node({
+      parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: SHEET_ROW_CODE },
+      name: 'Shape Sheet Row',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: pos(1100, 0),
+    }),
+  );
+  nodes.push(
+    node({
+      parameters: {
+        resource: 'sheet',
+        operation: 'append',
+        authentication: 'oAuth2',
+        documentId: { __rl: true, mode: 'url', value: SHEET_URL },
+        sheetName: { __rl: true, mode: 'name', value: SHEET_TAB },
+        columns: {
+          mappingMode: 'autoMapInputData',
+          value: {},
+          schema: SHEET_COLUMNS.map((c) => ({ id: c, displayName: c, required: false, defaultMatch: false, display: true, type: 'string', canBeUsedToMatch: false })),
+        },
+        options: { cellFormat: 'USER_ENTERED', handlingExtraData: 'ignoreIt' },
+      },
+      name: 'Append To Sheet',
+      type: 'n8n-nodes-base.googleSheets',
+      typeVersion: 4.7,
+      position: pos(1320, 0),
+      credentials: { googleSheetsOAuth2Api: SHEETS_CRED },
+    }),
+  );
+  connections['Insert Log Row'] = { main: [[{ node: 'Shape Sheet Row', type: 'main', index: 0 }]] };
+  connections['Shape Sheet Row'] = { main: [[{ node: 'Append To Sheet', type: 'main', index: 0 }]] };
+}
+
 const wf = {
   name: 'token-cost-log',
   nodes,
@@ -311,3 +401,6 @@ fs.writeFileSync(`${OUT}/tokenCostLog.json`, JSON.stringify(wf, null, 2));
 console.log('built tokenCostLog.json');
 console.log('pg cred:', PG_CRED.name, `(${PG_CRED.id})`);
 console.log('tracking workflows:', WORKFLOW_IDS.join(', '));
+console.log(SHEET_URL
+  ? `google sheet: ${SHEET_URL} tab "${SHEET_TAB}" via ${SHEETS_CRED.name} (${SHEETS_CRED.id})`
+  : 'google sheet: OFF - set TOKEN_SHEET_URL (env or .n8n-credentials.json) to also append each row to a Sheet');
