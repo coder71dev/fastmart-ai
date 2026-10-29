@@ -1100,6 +1100,28 @@ if (wantsApproval && approvalMeta && Array.isArray(approvalMeta.items)) {
 // when the table is missing, empty, or lacks a row for a wanted field -
 // onError: 'continueRegularOutput' on that node plus this filter means a
 // misconfigured table degrades to plain text, never a broken turn.
+// Deterministic backstop for the routine rule (dev/prompts.js): a full routine
+// waits until skin type is known. Live 2026-10-29 the model still searched
+// "for all skin types" and returned only a META_PROFILE_ASK line, so the
+// customer got a product grid with no prose. When this message asks for a
+// routine and the model's own META_PROFILE_ASK says skin type is missing
+// (it already accounts for anything said earlier in the chat), drop the
+// product cards and ask first. Not on the turn that submits the answers.
+try {
+  const piG = $('Prepare Input').first().json || {};
+  const cmG = String(piG.chatInput || '');
+  const answeredNow = !!(piG.action && piG.action.type === 'profile-answers');
+  // Never on a cart turn ("add this routine to my cart" also says routine).
+  const cartTurn = wantsVariant || wantsApproval || doCheckout || /\\b(add|cart|buy|order)\\b|কার্ট|অর্ডার/i.test(cmG);
+  if (!answeredNow && !cartTurn && profileAsk.includes('skin type') && /routine|regimen|rutin|রুটিন/i.test(cmG)) {
+    for (let k = blocks.length - 1; k >= 0; k--) {
+      if (['product-grid', 'product-carousel', 'routine', 'comparison'].includes(blocks[k] && blocks[k].type)) blocks.splice(k, 1);
+    }
+    replyTxt = looksBengali(cmG)
+      ? 'আপনার ত্বকের ধরন অনুযায়ী রুটিনটি সাজিয়ে দেব। ✨'
+      : "I'll tailor the routine to your skin. ✨";
+  }
+} catch {}
 let wantsProfileAsk = false;
 if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout) {
   try {
@@ -1166,7 +1188,12 @@ if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !pros
   // ৳ price elsewhere in the same (not-yet-stripped) replyTxt this check
   // scans - every price-bearing English reply was at risk of this, not just
   // ones that actually contained Bengali words.
-  if (/[\\u0980-\\u09F1\\u09FC-\\u09FF]/.test(replyTxt)) {
+  // ...or when the CUSTOMER wrote Bengali/Banglish: live 2026-10-29 a reply
+  // with no prose at all ("amar jonno ekta skincare routine banao") got the
+  // English question because there was no Bengali script to detect.
+  let custBn = false;
+  try { custBn = looksBengali(String((($('Prepare Input').first().json || {}).chatInput) || '')); } catch {}
+  if (custBn || /[\\u0980-\\u09F1\\u09FC-\\u09FF]/.test(replyTxt)) {
     const bnLabel = { 'skin type': '\u09b8\u09cd\u0995\u09bf\u09a8 \u099f\u09be\u0987\u09aa', concern: '\u0995\u09a8\u09b8\u09be\u09b0\u09cd\u09a8', budget: '\u09ac\u09be\u099c\u09c7\u099f' };
     const bnFields = profileAsk.map((f) => bnLabel[f] || f);
     replyTxt = replyTxt.trim() + '\\n\u0986\u09aa\u09a8\u09be\u09b0 ' + joinFields(bnFields, ' \u098f\u09ac\u0982 ') + ' \u0995\u09c0, \u09af\u09be\u09a4\u09c7 \u0986\u09ae\u09bf \u098f\u099f\u09bf \u0986\u09b0\u0993 \u09ad\u09be\u09b2\u09cb\u09ad\u09be\u09ac\u09c7 \u09ac\u09c7\u099b\u09c7 \u09a6\u09bf\u09a4\u09c7 \u09aa\u09be\u09b0\u09bf?';
