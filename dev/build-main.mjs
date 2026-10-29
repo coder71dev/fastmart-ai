@@ -51,10 +51,35 @@ const pos = (x, y) => [x, y];
 
 const WEBHOOK_ID = '9c2a1d7e-4b4f-4d9e-9c0a-1f2a3b4c5d6e';
 
+// Shared Bengali/Banglish detector, inlined into both Code nodes below.
+// Live 2026-10-29: Banglish turns ("apnara ki fake product sell kore thaken",
+// "ekta moisturizer suggest koro") came back in English or romanized Banglish
+// because the prompt asks the model to judge the language itself, and the
+// leaked-call fallback only checked for Bengali script. Decide it in code
+// instead: Bengali script, or at least one unambiguous Banglish word (or two
+// short ambiguous ones like "ki"/"na"). Written without backslashes so it
+// survives being embedded in the template strings unchanged.
+const LANG_DETECT = `
+function looksBengali(s) {
+  const t = String(s || '');
+  for (const ch of t) { const c = ch.codePointAt(0); if (c >= 0x0980 && c <= 0x09FF && c !== 0x09F3) return true; }
+  const strong = new Set(['ami','amar','amr','amk','amake','amra','apni','apnar','apnara','apnader','apnake','tumi','tomar','tomake','tomra','kivabe','kibhabe','keno','kothay','koto','achhe','achen','valo','bhalo','kemon','koro','korun','korben','korte','kore','korla','korlen','korbo','korechi','dekhao','dekhan','dekhte','lagbe','hobe','hoye','jonno','jnno','ektu','ekta','konta','konti','kono','theke','diye','deya','deoa','dibo','bolo','bolen','bolun','janla','jante','janao','sathe','kintu','bujhi','accha','acha','acchaa','onek','beshi','khub','shob','ekhon','sudhu','shudhu','gulo','gula','thaken','thako','parben','parbo','pabo','pabe','chai','nibo','nite','bangla','banglay','asol','ashol','nokol','nakol','ferot','batil']);
+  // Short words that are also English words or letters ("pore", "dam", "vitamin e")
+  // stay out entirely; these few only count when paired with another.
+  const weak = new Set(['ki','na','ar','ache','kom','kon','hoy','nai','nei']);
+  let score = 0;
+  for (const w of t.toLowerCase().split(/[^a-z]+/)) {
+    if (!w) continue;
+    if (strong.has(w)) score += 2; else if (weak.has(w)) score += 1;
+  }
+  return score >= 2;
+}
+`;
+
 // ---------------------------------------------------------------------------
 // Prepare Input + context builder (Code)
 // ---------------------------------------------------------------------------
-const PREPARE_CODE = `
+const PREPARE_CODE = `${LANG_DETECT}
 const body = $input.first().json.body ?? {};
 let msgRaw = (body.message ?? body.chatInput ?? '').toString().trim();
 const userId = (body.user_id ?? body.userId ?? '').toString().trim();
@@ -249,7 +274,13 @@ parts.push('CUSTOMER PROFILE: Skin: ' + (effProfile.skin || 'not provided') +
 
 if (actionLine) parts.push(actionLine);
 
-const ctx = 'CURRENT SHOPPING CONTEXT (authoritative - trust this over conversation history):\\n' + parts.join('\\n');
+// Decided in code (see LANG_DETECT) rather than left to the model's own
+// judgement, which got Banglish wrong live on 2026-10-29.
+if (looksBengali(msgRaw)) {
+  parts.push('CUSTOMER LANGUAGE: Bengali. Write your ENTIRE reply in Bengali script (বাংলা) - not English and not romanized Banglish - even when a specialist answered in English. When you call a specialist, end its task with "(reply in Bengali)".');
+}
+
+const ctx ='CURRENT SHOPPING CONTEXT (authoritative - trust this over conversation history):\\n' + parts.join('\\n');
 const systemPrompt = ${JSON.stringify(P.ORCHESTRATOR)} + '\\n\\n' + ctx;
 
 return [{ json: { chatInput: msgRaw, userId, sessionId: conversationId, conversationId, profile, evalMode, action, systemPrompt } }];
@@ -335,7 +366,7 @@ const CART_ADD_TOOL = {
 //  - markers + META footer are stripped from reply (system-only metadata).
 // Block failures must NEVER break the reply: everything is wrapped in try/catch.
 // ---------------------------------------------------------------------------
-const RESPONSE_CODE = `
+const RESPONSE_CODE = `${LANG_DETECT}
 // Every AI Agent reference below is by NAME ($('AI Agent'), never bare $input) -
 // Response now takes a SECOND input connection from Profile Questions Table
 // (see connections['Profile Questions Table'] below) so n8n's scheduler waits
@@ -1162,7 +1193,7 @@ try {
   const supportRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'support_specialist');
   const offersRan0 = steps0.some((st) => String(st && st.action && st.action.tool || '') === 'get_current_offers');
   const supportIntent0 = /authentic|genuine|fake|original|return|refund|exchange|deliver|shipping|ship|payment|cod|cash|cancel|warrant|contact|phone|email|address|hotline|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|অথেন্টিক|আসল|নকল|খাঁটি|রিটার্ন|ফেরত|বদল|ডেলিভারি|শিপিং|কবে|পেমেন্ট|ক্যাশ|ক্যান্সেল|বাতিল|ওয়ারেন্টি|গ্যারান্টি|কথা/i.test(cm0);
-  const authIntent0 = /authentic|genuine|fake|অথেন্টিক|আসল|নকল|খাঁটি/i.test(cm0);
+  const authIntent0 = /authentic|genuine|fake|asol|ashol|nokol|nakol|importer sticker|অথেন্টিক|আসল|নকল|খাঁটি|ইমপোর্টার/i.test(cm0);
   const dermaIntent0 = /dermatolog|doctor|appointment|consultation|skin consult|ডার্মাটোলজ|ডাক্তার|অ্যাপয়েন্ট|পরামর্শ/i.test(cm0);
   supportIntentGuard = (!leakedTool && !supportRan0 && (authIntent0 || dermaIntent0 || (offersRan0 && supportIntent0)));
   // A reported order problem with no order code in the customer's own message:
@@ -1183,7 +1214,7 @@ try {
 if (leakedTool || supportIntentGuard || orderProblemGuard) {
   let custMsg = '';
   try { custMsg = String((($('Prepare Input').first().json || {}).chatInput) || ''); } catch {}
-  const bn = /[\\u0980-\\u09FF]/.test(custMsg);
+  const bn = looksBengali(custMsg);
   let ans = '';
   try {
     const q = (leakedInput + ' ' + custMsg).toLowerCase();
@@ -1209,10 +1240,20 @@ if (leakedTool || supportIntentGuard || orderProblemGuard) {
         ans = bn
           ? 'আপনি আমাদের সাথে এই নম্বরে যোগাযোগ করতে পারেন: ' + phone + '\\nইমেইল: ' + email + '\\nঠিকানা: ' + address + '\\nযোগাযোগের অন্যান্য উপায়: ' + web + '/pages/contact-us'
           : 'You can reach us at ' + phone + ' or ' + email + '.\\nAddress: ' + address + '\\nMore ways to contact us: ' + web + '/pages/contact-us';
-      } else if (/authentic|genuine|fake|original|real|অথেন্টিক|আসল|নকল|খাঁটি/.test(q)) {
+      } else if (/sticker|importer|import|label|seal|batch|expiry|expire|mfg|স্টিকার|ইমপোর্টার|লেবেল|মেয়াদ/.test(q)) {
+        // Not in the policy list, so never claim either way - live 2026-10-29
+        // this question got a generic "see our FAQ" that ignored it entirely.
         ans = bn
-          ? 'হ্যাঁ, পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। বিস্তারিত: ' + web + '/pages/about-us'
-          : 'Yes - all Perfecto BD products are 100% authentic and sourced from official brands. Learn more: ' + web + '/pages/about-us';
+          ? 'প্রতিটি প্রোডাক্টের ইমপোর্টার স্টিকার বা লেবেলের তথ্য এই মুহূর্তে আমার কাছে নেই। পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। নির্দিষ্ট প্রোডাক্টের স্টিকার সম্পর্কে জানতে যোগাযোগ করুন:\\nফোন: ' + phone + '\\nইমেইল: ' + email
+          : 'I don\\'t have importer sticker or label details for each product right now. All Perfecto BD products are 100% authentic and sourced from official brands. For sticker details on a specific product, contact us:\\nPhone: ' + phone + '\\nEmail: ' + email;
+      } else if (/authentic|genuine|fake|original|real|duplicate|copy|asol|ashol|nokol|nakol|অথেন্টিক|আসল|নকল|খাঁটি/.test(q)) {
+        // "Do you sell FAKE products?" must not be answered "Yes - ..." (live
+        // 2026-10-29) - say "No" to the fake question, and never lead with a
+        // bare yes/no for the positive one.
+        const askedFake = /fake|duplicate|copy|nokol|nakol|নকল/.test(q);
+        ans = bn
+          ? (askedFake ? 'না, পারফেক্টো বিডি কোনো নকল প্রোডাক্ট বিক্রি করে না। ' : '') + 'পারফেক্টো বিডি-র সব প্রোডাক্ট ১০০% আসল এবং অফিশিয়াল ব্র্যান্ড থেকে সংগৃহীত। বিস্তারিত: ' + web + '/pages/about-us'
+          : (askedFake ? 'No - Perfecto BD never sells fake products. ' : '') + 'All Perfecto BD products are 100% authentic and sourced from official brands. Learn more: ' + web + '/pages/about-us';
       } else if (/return|refund|exchange|রিটার্ন|ফেরত|বদল/.test(q)) {
         ans = bn
           ? 'অব্যবহৃত ও খোলা না করা প্রোডাক্টের জন্য আমাদের ১৪ দিনের রিটার্ন পলিসি রয়েছে; রিফান্ড রিটার্ন পাওয়ার ৫-৭ কার্যদিবসের মধ্যে প্রসেস হয়। বিস্তারিত: ' + web + '/pages/returnpolicy'
