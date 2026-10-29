@@ -34,7 +34,11 @@ const METRICS_CRED_NAME = process.env.METRICS_CRED_NAME || credConfig.METRICS_CR
 const METRICS_CRED_ID = process.env.METRICS_CRED_ID || credConfig.METRICS_CRED_ID || 'aDuHo9mivsM8kd9Z';
 const METRICS_CRED = { id: METRICS_CRED_ID, name: METRICS_CRED_NAME };
 const TABLE = process.env.TOKEN_TABLE || 'token_usage';
-const LIMIT = Number(process.env.COLLECT_LIMIT || 50);
+const LIMIT = Number(process.env.COLLECT_LIMIT || 20);
+// A single execution bigger than this is skipped (counted, never decoded): one
+// oversized row is enough to OOM the task runner, and because the cursor only
+// advances after a successful run it would then crash on that same batch forever.
+const MAX_BYTES = Number(process.env.COLLECT_MAX_BYTES || 5 * 1024 * 1024);
 const MINUTES = Number(process.env.COLLECT_MINUTES || 120);
 
 // One row per LLM call. Column names are also the keys the decoder emits, so the
@@ -68,16 +72,25 @@ return [{ json: { lastId, limit: ${LIMIT} } }];
 
 // ---------------------------------------------------------------------------
 // 2. Fetch — n8n's own execution data, oldest-first from the cursor.
+//    ONLY the chat workflows (agent-chat + specialists), matched by name so no
+//    instance ids are baked in. Crashed live 2026-10-27..28 without this: the
+//    query read EVERY workflow, including this collector's own saved runs —
+//    and each of those stores the ~50 blobs it fetched, so the next pass
+//    fetched copies of copies until the runner ran out of memory ("Node
+//    crashed, possible out-of-memory issue" at Decode Calls, 9 runs in a row).
+//    Oversized rows still come back (so the cursor can move past them) but
+//    with their data replaced by NULL.
 // ---------------------------------------------------------------------------
 const FETCH_QUERY = `SELECT e.id AS execution_id,
        e.mode AS run_mode,
-       COALESCE(w.name, '') AS workflow_name,
+       w.name AS workflow_name,
        e."startedAt" AS started_at,
-       d.data AS data
+       CASE WHEN octet_length(d.data) <= ${MAX_BYTES} THEN d.data END AS data
 FROM execution_entity e
 JOIN execution_data d ON d."executionId" = e.id
-LEFT JOIN workflow_entity w ON w.id = e."workflowId"
+JOIN workflow_entity w ON w.id = e."workflowId"
 WHERE e.id > {{ Number($('Prepare Cursor').first().json.lastId) }}
+  AND (w.name = 'agent-chat (prod webhook)' OR w.name LIKE 'specialist-%')
 ORDER BY e.id ASC
 LIMIT {{ Number($('Prepare Cursor').first().json.limit) }}`;
 
@@ -101,8 +114,12 @@ for (const item of $input.all()) {
   const id = Number(j.execution_id) || 0;
   if (id > maxId) maxId = id;
 
+  // NULL = over MAX_BYTES (see FETCH_QUERY); still counted toward maxId above.
+  if (j.data == null) { skipped++; continue; }
   let t = null;
   try { t = JSON.parse(j.data); } catch (e) { skipped++; continue; }
+  // Drop the raw string from the item so it is not carried (and saved) again.
+  delete j.data;
   if (!Array.isArray(t)) { skipped++; continue; }
 
   // one hop: a numeric string is an index into the flattened table
