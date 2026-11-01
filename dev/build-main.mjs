@@ -43,6 +43,10 @@ const N8N = { spec: SPEC };
 // in build-workflows.mjs. dev/sync.mjs deploys it first and fills this in.
 const OFFERS_TOOL_ID = process.env.OFFERS_TOOL_ID || 'REPLACE_WITH_OFFERS_TOOL_ID';
 
+// notebook-tools (dev/build-notebook-tools.mjs): staff notebook matching +
+// daily message limit. Deployed by sync.mjs before this file is built.
+const NOTEBOOK_TOOLS_ID = process.env.NOTEBOOK_TOOLS_ID || 'REPLACE_WITH_NOTEBOOK_TOOLS_ID';
+
 // Node ids are DERIVED FROM THE NODE NAME, not random — see dev/node-id.mjs.
 // A random id on every build breaks canvas groups and any other n8n-side
 // reference to the old id when the workflow is PATCHed.
@@ -221,7 +225,7 @@ function buildActionLine(a) {
     // (same keys as the regular body.profile field), so this line is just a
     // short nudge, not a repeat of the values.
     const ans = (a.answers && typeof a.answers === 'object') ? a.answers : {};
-    if (!ans.skin && !ans.concern && !ans.budget) return '';
+    if (!ans.skin && !ans.age && !ans.concern && !ans.budget) return '';
     return 'CUSTOMER ACTION: the customer just submitted the profile-questions form - CUSTOMER PROFILE above already reflects their answers. Proceed with the recommendation now using it; do not ask again.';
   }
   if (t === 'approval') {
@@ -247,6 +251,7 @@ const actionLine = buildActionLine(action);
 const submittedAnswers = (action && action.type === 'profile-answers' && action.answers && typeof action.answers === 'object') ? action.answers : null;
 const effProfile = {
   skin: (submittedAnswers && submittedAnswers.skin) || (profile && profile.skin) || null,
+  age: (submittedAnswers && submittedAnswers.age) || (profile && profile.age) || null,
   concern: (submittedAnswers && submittedAnswers.concern) || (profile && profile.concern) || null,
   budget: (submittedAnswers && submittedAnswers.budget) || (profile && profile.budget) || null,
 };
@@ -269,6 +274,7 @@ parts.push(cartTxt);
 // "this turn just has no CUSTOMER PROFILE block", and ask for exactly the
 // fields actually missing instead of guessing or re-asking ones it already has.
 parts.push('CUSTOMER PROFILE: Skin: ' + (effProfile.skin || 'not provided') +
+  ' | Age: ' + (effProfile.age || 'not provided') +
   ' | Concern: ' + (effProfile.concern || 'not provided') +
   ' | Budget: ' + (effProfile.budget || 'not provided'));
 
@@ -284,6 +290,49 @@ const ctx ='CURRENT SHOPPING CONTEXT (authoritative - trust this over conversati
 const systemPrompt = ${JSON.stringify(P.ORCHESTRATOR)} + '\\n\\n' + ctx;
 
 return [{ json: { chatInput: msgRaw, userId, sessionId: conversationId, conversationId, profile, evalMode, action, systemPrompt } }];
+`;
+
+// ---------------------------------------------------------------------------
+// Staff notebook + daily limit (notebook-tools sub-workflow)
+// ---------------------------------------------------------------------------
+// The request notebook-tools' "pre-reply" action expects. The customer's IP is
+// a backup limit key (a widget user_id can be reset by clearing the browser).
+const NOTEBOOK_REQUEST_CODE = `
+const p = $('Prepare Input').first().json;
+let ip = '';
+try {
+  const h = $('Webhook').first().json.headers || {};
+  ip = String(h['cf-connecting-ip'] || h['x-real-ip'] || h['x-forwarded-for'] || '').split(',')[0].trim();
+} catch (e) {}
+return [{ json: { action: 'pre-reply', text: p.chatInput, user_key: p.userId, ip, eval: !!p.evalMode } }];
+`;
+
+// Merges the notebook answer into Prepare Input's item. Fails OPEN: if
+// notebook-tools errored or returned nothing, the turn continues exactly as
+// before (no examples, not limited).
+const APPLY_NOTEBOOK_CODE = `
+const p = { ...$('Prepare Input').first().json };
+let n = {};
+try { n = $('Notebook Check').first().json || {}; } catch (e) { n = {}; }
+if (n.error) n = {};
+const guidance = typeof n.guidance === 'string' ? n.guidance : '';
+if (guidance) p.systemPrompt = p.systemPrompt + '\\n\\n' + guidance;
+p.limited = n.allowed === false;
+p.remaining = (typeof n.remaining === 'number') ? n.remaining : null;
+p.notebookMatches = Array.isArray(n.matches) ? n.matches.map(m => m.entry_key) : [];
+p.limitReplyBn = n.limit_reply_bn || '';
+p.limitReplyEn = n.limit_reply_en || '';
+return [{ json: p }];
+`;
+
+const LIMIT_REPLY_CODE = `${LANG_DETECT}
+const p = $input.first().json;
+// Bengali when the message clearly is; otherwise both (short Banglish like
+// "retinal ki beginner friendly?" doesn't score as Bengali but usually is)
+const bn = looksBengali(p.chatInput || '');
+const reply = (bn ? p.limitReplyBn : [p.limitReplyBn, p.limitReplyEn].filter(Boolean).join('\\n\\n'))
+  || 'Sorry, today\\'s message limit is over. Please message us again tomorrow, or call +8801775-423477.';
+return [{ json: { reply, conversation_id: p.conversationId || null, blocks: [], suggestions: [], token_usage: null, remaining: 0, limited: true } }];
 `;
 
 // ---------------------------------------------------------------------------
@@ -726,12 +775,20 @@ try {
   const pam = replyTxt.match(/META_PROFILE_ASK:\\s*(\\[.*?\\])/i);
   if (pam) {
     const parsed = JSON.parse(pam[1]);
-    const allowed = ['skin type', 'concern', 'budget'];
+    const allowed = ['skin type', 'age', 'concern', 'budget'];
     if (Array.isArray(parsed)) {
       const picked = parsed.filter((s) => typeof s === 'string' && allowed.includes(s.trim().toLowerCase())).map((s) => s.trim().toLowerCase());
       profileAsk = allowed.filter((f) => picked.includes(f));
     }
   }
+} catch {}
+// Never ask for a field the profile already has: live 2026-11-01 the model
+// asked "what is your age?" with Age: 25-34 right there in CUSTOMER PROFILE.
+try {
+  const pi = $('Prepare Input').first().json || {};
+  const known = Object.assign({}, pi.profile || {}, (pi.action && pi.action.type === 'profile-answers' && pi.action.answers) || {});
+  const keyOfField = { 'skin type': 'skin', age: 'age', concern: 'concern', budget: 'budget' };
+  profileAsk = profileAsk.filter((f) => !String(known[keyOfField[f]] || '').trim());
 } catch {}
 // A bare greeting is not a recommendation turn: live 2026-10-29 one "hello"
 // got the skin/concern/budget form and two other "hello"s did not. Drop the
@@ -1113,19 +1170,32 @@ try {
   const answeredNow = !!(piG.action && piG.action.type === 'profile-answers');
   // Never on a cart turn ("add this routine to my cart" also says routine).
   const cartTurn = wantsVariant || wantsApproval || doCheckout || /\\b(add|cart|buy|order)\\b|কার্ট|অর্ডার/i.test(cmG);
-  if (!answeredNow && !cartTurn && profileAsk.includes('skin type') && /routine|regimen|rutin|রুটিন/i.test(cmG)) {
+  // Since 2026-11-01 (client review) staff ask BEFORE suggesting any skincare,
+  // not only routines: live, "what moisturizer should I use" still got 5
+  // product cards next to the questions. So whenever the model's own
+  // META_PROFILE_ASK says skin type or age is missing, hold the products back.
+  // Skincare only: makeup/hair/body/fragrance never needed skin type first
+  // (live 2026-11-01 "lipstick dekhan" got the questions instead of lipsticks).
+  const nonSkincare = /lip|liner|mascara|kajal|kohl|eyeshadow|eye ?shadow|foundation|concealer|blush|highlighter|primer|compact|powder|makeup|make up|nail|perfume|fragrance|body ?spray|deo|shampoo|conditioner|hair|brush|sponge|লিপ|লিপস্টিক|কাজল|মাসকারা|ফাউন্ডেশন|মেকআপ|নেইল|পারফিউম|শ্যাম্পু|চুল/i.test(cmG);
+  const mustAskFirst = !nonSkincare && (profileAsk.includes('skin type') || profileAsk.includes('age'));
+  if (!answeredNow && !cartTurn && mustAskFirst) {
+    let removed = 0;
     for (let k = blocks.length - 1; k >= 0; k--) {
-      if (['product-grid', 'product-carousel', 'routine', 'comparison'].includes(blocks[k] && blocks[k].type)) blocks.splice(k, 1);
+      if (['product-grid', 'product-carousel', 'routine', 'comparison'].includes(blocks[k] && blocks[k].type)) { blocks.splice(k, 1); removed++; }
     }
-    replyTxt = looksBengali(cmG)
-      ? 'আপনার ত্বকের ধরন অনুযায়ী রুটিনটি সাজিয়ে দেব। ✨'
-      : "I'll tailor the routine to your skin. ✨";
+    const isRoutine = /routine|regimen|rutin|রুটিন/i.test(cmG);
+    // keep the model's own wording when it already asked without showing products
+    if (removed || isRoutine) {
+      replyTxt = looksBengali(cmG)
+        ? (isRoutine ? 'আপনার ত্বকের ধরন অনুযায়ী রুটিনটি সাজিয়ে দেব। ✨' : 'সঠিক প্রোডাক্ট সাজেস্ট করার আগে আপনার কয়েকটি তথ্য জানা দরকার ম্যাম। ✨')
+        : (isRoutine ? "I'll tailor the routine to your skin. ✨" : 'To suggest the right product, I need a few details about your skin first. ✨');
+    }
   }
 } catch {}
 let wantsProfileAsk = false;
 if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout) {
   try {
-    const keyOf = { 'skin type': 'skin', concern: 'concern', budget: 'budget' };
+    const keyOf = { 'skin type': 'skin', age: 'age', concern: 'concern', budget: 'budget' };
     const wantedKeys = profileAsk.map((f) => keyOf[f]).filter(Boolean);
     const rows = $('Profile Questions Table').all().map((it) => it.json);
     const fields = rows
@@ -1194,7 +1264,7 @@ if (profileAsk.length && !wantsVariant && !wantsApproval && !doCheckout && !pros
   let custBn = false;
   try { custBn = looksBengali(String((($('Prepare Input').first().json || {}).chatInput) || '')); } catch {}
   if (custBn || /[\\u0980-\\u09F1\\u09FC-\\u09FF]/.test(replyTxt)) {
-    const bnLabel = { 'skin type': '\u09b8\u09cd\u0995\u09bf\u09a8 \u099f\u09be\u0987\u09aa', concern: '\u0995\u09a8\u09b8\u09be\u09b0\u09cd\u09a8', budget: '\u09ac\u09be\u099c\u09c7\u099f' };
+    const bnLabel = { 'skin type': '\u09b8\u09cd\u0995\u09bf\u09a8 \u099f\u09be\u0987\u09aa', age: '\u09ac\u09df\u09b8', concern: '\u0995\u09a8\u09b8\u09be\u09b0\u09cd\u09a8', budget: '\u09ac\u09be\u099c\u09c7\u099f' };
     const bnFields = profileAsk.map((f) => bnLabel[f] || f);
     replyTxt = replyTxt.trim() + '\\n\u0986\u09aa\u09a8\u09be\u09b0 ' + joinFields(bnFields, ' \u098f\u09ac\u0982 ') + ' \u0995\u09c0, \u09af\u09be\u09a4\u09c7 \u0986\u09ae\u09bf \u098f\u099f\u09bf \u0986\u09b0\u0993 \u09ad\u09be\u09b2\u09cb\u09ad\u09be\u09ac\u09c7 \u09ac\u09c7\u099b\u09c7 \u09a6\u09bf\u09a4\u09c7 \u09aa\u09be\u09b0\u09bf?';
   } else {
@@ -1236,7 +1306,13 @@ try {
   const supportIntent0 = /authentic|genuine|fake|original|return|refund|exchange|deliver|shipping|ship|payment|cod|cash|cancel|warrant|contact|phone|email|address|hotline|নম্বর|যোগাযোগ|ফোন|ইমেইল|ঠিকানা|হটলাইন|অথেন্টিক|আসল|নকল|খাঁটি|রিটার্ন|ফেরত|বদল|ডেলিভারি|শিপিং|কবে|পেমেন্ট|ক্যাশ|ক্যান্সেল|বাতিল|ওয়ারেন্টি|গ্যারান্টি|কথা/i.test(cm0);
   const authIntent0 = /authentic|genuine|fake|asol|ashol|nokol|nakol|importer sticker|অথেন্টিক|আসল|নকল|খাঁটি|ইমপোর্টার/i.test(cm0);
   const dermaIntent0 = /dermatolog|doctor|appointment|consultation|skin consult|ডার্মাটোলজ|ডাক্তার|অ্যাপয়েন্ট|পরামর্শ/i.test(cm0);
-  supportIntentGuard = (!leakedTool && !supportRan0 && (authIntent0 || dermaIntent0 || (offersRan0 && supportIntent0)));
+  // When the staff notebook matched this message, the model already answered
+  // from staff examples — the canned texts below are older and contradict
+  // them (e.g. "call us about the importer sticker" vs staff's "every product
+  // has one"), so they must not replace a notebook-guided reply.
+  let notebookHit0 = false;
+  try { notebookHit0 = (($('Apply Notebook').first().json || {}).notebookMatches || []).length > 0; } catch {}
+  supportIntentGuard = (!leakedTool && !notebookHit0 && !supportRan0 && (authIntent0 || dermaIntent0 || (offersRan0 && supportIntent0)));
   // A reported order problem with no order code in the customer's own message:
   // if the specialist did not actually find an order, answer deterministically
   // (where to find the code + contact) instead of a bare "provide your code".
@@ -1250,7 +1326,7 @@ try {
     const s = typeof o === 'string' ? o : (o != null ? JSON.stringify(o) : '');
     return /"has_order"\\s*:\\s*true/i.test(s) || /META_ORDER_JSON/i.test(s);
   });
-  orderProblemGuard = (!leakedTool && orderProblem0 && !hasCode0 && !orderFound0);
+  orderProblemGuard = (!leakedTool && !notebookHit0 && orderProblem0 && !hasCode0 && !orderFound0);
 } catch {}
 if (leakedTool || supportIntentGuard || orderProblemGuard) {
   let custMsg = '';
@@ -1305,8 +1381,8 @@ if (leakedTool || supportIntentGuard || orderProblemGuard) {
           : (askedFake ? 'No - Perfecto BD never sells fake products. ' : '') + 'All Perfecto BD products are 100% authentic and sourced from official brands. Learn more: ' + web + '/pages/about-us';
       } else if (/return|refund|exchange|রিটার্ন|ফেরত|বদল/.test(q)) {
         ans = bn
-          ? 'অব্যবহৃত ও খোলা না করা প্রোডাক্টের জন্য আমাদের ১৪ দিনের রিটার্ন পলিসি রয়েছে; রিফান্ড রিটার্ন পাওয়ার ৫-৭ কার্যদিবসের মধ্যে প্রসেস হয়। বিস্তারিত: ' + web + '/pages/returnpolicy'
-          : 'We have a 14-day return policy for unused, unopened products, and refunds are processed within 5-7 business days after we receive the return. Details: ' + web + '/pages/returnpolicy';
+          ? 'কোনো প্রোডাক্ট মিসিং বা ভুল হলে ডেলিভারি ম্যান সামনে থাকা অবস্থায় আমাদের সাথে যোগাযোগ করুন (' + phone + ')। ড্যামেজ বা ডিফেক্টিভ হলে প্রোডাক্টটি ইনটেক্ট রেখে ছবি আমাদের ইনবক্সে দিন। সিল খোলা, ব্যবহার করা বা স্যুট না করা প্রোডাক্টে এক্সচেঞ্জ বা রিফান্ডের সুযোগ নেই।'
+          : 'If an item is missing or wrong, contact us while the delivery man is still there (' + phone + '). If it is damaged or defective, keep it intact and send us photos in our inbox. Opened, used or not-suited products cannot be exchanged or refunded.';
       } else if (/free ship|free deliver|ফ্রি|ফ্রী|মুফত/.test(q)) {
         ans = bn
           ? 'বর্তমান অফার অনুযায়ী ৳১,২০০-এর বেশি অর্ডারে ফ্রি শিপিং প্রযোজ্য। বিস্তারিত: ' + web + '/pages/shipping-delivery'
@@ -1378,6 +1454,8 @@ if (leakedTool || supportIntentGuard || orderProblemGuard) {
 }
 const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
 out.reply = replyClean;
+// messages left today under the daily limit (null = no limit / not counted)
+try { const a = $('Apply Notebook').first().json; if (typeof a.remaining === 'number') out.remaining = a.remaining; } catch {}
 // token_usage stays null on this n8n version and that is not fixable in-workflow:
 // the Agent node's output is {output, intermediateSteps} (it never emits
 // tokenUsage), and n8n's data proxy cannot reach the ai_languageModel sub-node
@@ -1483,6 +1561,68 @@ nodes.push(
     type: 'n8n-nodes-base.respondToWebhook',
     typeVersion: 1.4,
     position: pos(940, 0),
+  }),
+);
+// Staff notebook + daily limit. notebook-tools returns the guidance block
+// (golden rules + most similar staff examples) and the limit decision; it
+// fails open (onError continue) so a notebook problem never blocks a reply.
+nodes.push(
+  node({
+    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: NOTEBOOK_REQUEST_CODE },
+    name: 'Notebook Request',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(400, -620),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      source: 'database',
+      workflowId: { __rl: true, mode: 'id', value: NOTEBOOK_TOOLS_ID },
+      mode: 'once',
+      options: { waitForSubWorkflow: true },
+    },
+    name: 'Notebook Check',
+    type: 'n8n-nodes-base.executeWorkflow',
+    typeVersion: 1.2,
+    position: pos(560, -620),
+    onError: 'continueRegularOutput',
+    alwaysOutputData: true,
+  }),
+);
+nodes.push(
+  node({
+    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: APPLY_NOTEBOOK_CODE },
+    name: 'Apply Notebook',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(720, -620),
+  }),
+);
+nodes.push(
+  node({
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 3 },
+        combinator: 'and',
+        conditions: [{ id: 'limited', leftValue: '={{ $json.limited === true }}', rightValue: '', operator: { type: 'boolean', operation: 'true', singleValue: true } }],
+      },
+      options: {},
+    },
+    name: 'Over Daily Limit?',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.3,
+    position: pos(880, -620),
+  }),
+);
+nodes.push(
+  node({
+    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: LIMIT_REPLY_CODE },
+    name: 'Limit Reply',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(1040, -760),
   }),
 );
 nodes.push(
@@ -1611,7 +1751,13 @@ nodes.push(
 connections['Webhook'] = { main: [[{ node: 'Prepare Input', type: 'main', index: 0 }]] };
 connections['Prepare Input'] = { main: [[{ node: 'User ID Present?', type: 'main', index: 0 }]] };
 // If output 0 = true (error present) -> Respond 400; output 1 = false (normal) -> AI Agent.
-connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
+connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main', index: 0 }], [{ node: 'Notebook Request', type: 'main', index: 0 }]] };
+connections['Notebook Request'] = { main: [[{ node: 'Notebook Check', type: 'main', index: 0 }]] };
+connections['Notebook Check'] = { main: [[{ node: 'Apply Notebook', type: 'main', index: 0 }]] };
+connections['Apply Notebook'] = { main: [[{ node: 'Over Daily Limit?', type: 'main', index: 0 }]] };
+// true -> polite limit reply (no LLM call); false -> the normal turn
+connections['Over Daily Limit?'] = { main: [[{ node: 'Limit Reply', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
+connections['Limit Reply'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
 connections['AI Agent'] = { main: [[{ node: 'Wait For Profile Questions', type: 'main', index: 0 }]] };

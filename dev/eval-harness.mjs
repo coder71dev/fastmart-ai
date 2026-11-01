@@ -6,7 +6,7 @@
 // thing being graded, and can run against local or VPS later.
 //
 // Usage:
-//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language|offers|routine]
+//   node dev/eval-harness.mjs [--webhook URL] [--store URL] [--group all|contract|product|search|cart|hitl|support|memory|profile|language|offers|routine|notebook|limit]
 //   node dev/eval-harness.mjs --out report.json
 //
 // Exit code 0 = no HARD failures; 1 = at least one HARD failure.
@@ -116,10 +116,13 @@ function run(group, list) { return list.filter((c) => group === 'all' || c[1] ==
 // Case battery
 // ---------------------------------------------------------------------------
 const battery = [];
+// Since 2026-11-01 skincare suggestions wait for skin type + age (staff
+// ask first), so search cases that need product cards say who is asking.
+const KNOWN_SKIN = { skin: 'Oily', age: '25-34' };
 
 // ---- product --------------------------------------------------------------
 battery.push(['product-grid on serum search', 'product', true, async () => {
-  const { status, json } = await postChat({ message: 'find me face serums' });
+  const { status, json } = await postChat({ message: 'find me face serums', profile: KNOWN_SKIN });
   if (status !== 200 || !json) return { ok: false, detail: `http ${status} / no json` };
   const cards = cardsOf(json);
   const bad = cards.filter((c) => !c.id || !c.name || !(c.price > 0) || !c.image);
@@ -130,7 +133,7 @@ battery.push(['product-grid on serum search', 'product', true, async () => {
 }]);
 
 battery.push(['no invented product for nonsense query', 'product', false, async () => {
-  const { json } = await postChat({ message: 'do you sell the ZzzqQx brand of face serum?' });
+  const { json } = await postChat({ message: 'do you sell the ZzzqQx brand of face serum?', profile: KNOWN_SKIN });
   const r = json?.reply ?? '';
   const namesItAsReal = /ZzzqQx[^\n]{0,80}\u09f3/.test(r); // recommending a price for the fake brand
   const negates = /not|no |don'?t|couldn|unavailable|can'?t|doesn'?t|carry/i.test(r);
@@ -319,7 +322,7 @@ battery.push(['size-option product is asked via picker, not guessed', 'hitl', fa
 // prices can drift, so this asserts the STRUCTURAL guarantee (ascending order
 // among whatever cards came back), not a specific product or price.
 battery.push(['"cheapest" query returns price-ascending results', 'search', true, async () => {
-  const { json } = await postChat({ message: 'cheapest facewash' });
+  const { json } = await postChat({ message: 'cheapest facewash', profile: KNOWN_SKIN });
   const cards = cardsOf(json);
   if (cards.length < 2) return { ok: false, detail: `only ${cards.length} card(s), can't verify ordering` };
   const prices = cards.map((c) => c.price);
@@ -345,7 +348,7 @@ battery.push(['color/shade search ("maroon lipstick") finds real products', 'sea
 // backstop lives in the Response node (dev/build-main.mjs, 2026-10-13). This
 // is the regression test for that backstop, not for prompt wording.
 battery.push(['multi-product reply does not re-list names/prices already on the cards', 'search', true, async () => {
-  const { json } = await postChat({ message: 'cheapest facewash' });
+  const { json } = await postChat({ message: 'cheapest facewash', profile: KNOWN_SKIN });
   const cards = cardsOf(json);
   if (cards.length < 2) return { ok: false, detail: `only ${cards.length} card(s), test needs 2+` };
   const lines = (json?.reply ?? '').split('\n');
@@ -397,10 +400,13 @@ battery.push(['named flash deal returns that deal\'s real products', 'offers', t
 }]);
 
 // ---- support --------------------------------------------------------------
-battery.push(['return policy answer', 'support', false, async () => {
+// Staff policy (client review 2026-11-01): report problems in front of the
+// delivery man; no return once the seal is opened / used / didn't suit.
+// The old "14-day return" answer was marked wrong.
+battery.push(['return policy answer follows the staff policy', 'support', false, async () => {
   const { json } = await postChat({ message: 'what is your return policy?' });
   const r = json?.reply ?? '';
-  return { ok: /\b14\b/.test(r) && /return/i.test(r), detail: r.slice(0, 90) };
+  return { ok: /seal|delivery man|ডেলিভারি ম্যান|সিল/i.test(r) && !/\b14[- ]day/i.test(r), detail: r.slice(0, 90) };
 }]);
 battery.push(['delivery answer', 'support', false, async () => {
   const { json } = await postChat({ message: 'how long does delivery take?' });
@@ -462,15 +468,19 @@ function trailingQuestion(r) {
 }
 const mentionsProfileField = (s) => /\bskin\b|\bconcern\b|\bbudget\b/i.test(s);
 
-battery.push(['no saved profile: still recommends, then asks what is missing', 'profile', false, async () => {
+// Changed 2026-11-01 (client review): staff ALWAYS ask skin type + age before
+// suggesting, so with no profile the turn asks and shows no products.
+const profileFormOf = (d) => d.blocks?.find((b) => b.type === 'profile-questions');
+battery.push(['no saved profile: asks skin type + age first, suggests nothing yet', 'profile', false, async () => {
   const { json } = await postChat({ message: 'what moisturizer should I use' });
   const cards = cardsOf(json);
-  const q = trailingQuestion(json?.reply);
-  return { ok: cards.length > 0 && !!q && mentionsProfileField(q), detail: `cards=${cards.length}, trailing question: "${q}"` };
+  const form = profileFormOf(json);
+  const asks = !!form || /\?/.test(json?.reply ?? '');
+  return { ok: cards.length === 0 && asks, detail: `cards=${cards.length}, form fields=${(form?.fields ?? []).map((f) => f.key).join(',')}` };
 }]);
 
 battery.push(['full saved profile: recommends without re-asking', 'profile', false, async () => {
-  const { json } = await postChat({ message: 'what moisturizer should I use', profile: { skin: 'Oily', concern: 'Acne', budget: 'Under Tk 1500' } });
+  const { json } = await postChat({ message: 'what moisturizer should I use', profile: { skin: 'Oily', age: '25-34', concern: 'Acne', budget: 'Under Tk 1500' } });
   const cards = cardsOf(json);
   const q = trailingQuestion(json?.reply);
   // A trailing "?" is fine (e.g. "want me to add one?") as long as it is not
@@ -480,7 +490,7 @@ battery.push(['full saved profile: recommends without re-asking', 'profile', fal
 }]);
 
 battery.push(['partial saved profile: asks only for what is still missing', 'profile', false, async () => {
-  const { json } = await postChat({ message: 'what moisturizer should I use', profile: { skin: 'Dry' } });
+  const { json } = await postChat({ message: 'what moisturizer should I use', profile: { skin: 'Dry', age: '25-34' } });
   const cards = cardsOf(json);
   const q = trailingQuestion(json?.reply);
   const asksBudgetOrConcern = /\bconcern\b|\bbudget\b/i.test(q);
@@ -495,6 +505,62 @@ battery.push(['replies in Bengali when asked in Bengali', 'language', false, asy
   const hasBangla = /[\u0980-\u09FF]/.test(r);
   const hasReturn = /return|রিটার্ন/i.test(r);
   return { ok: r.length > 10 && (hasBangla || hasReturn), detail: r.slice(0, 90) };
+}]);
+
+// ---- staff notebook (client review 2026-11-01) ------------------------------
+// The notebook (n8n Data Table support_notebook, edited from perfecto-ai-ops)
+// holds "customer asked → staff answered" examples; the bot finds the closest
+// ones by MEANING. Each case below is either a question from the client's
+// review or a REWORDED one the notebook has never seen. Hard asserts check the
+// staff DECISION (no product cards when staff suggest nothing; the exact fact
+// when staff give one) — prose wording is the model's own.
+const noCards = (d) => cardsOf(d).length === 0 && !routineOf(d);
+const notebookCase = (name, message, ok) => battery.push([name, 'notebook', true, async () => {
+  const { json } = await postChat({ message });
+  const r = json?.reply ?? '';
+  return { ok: !!json && ok(json, r), detail: `cards=${cardsOf(json ?? {}).length}: ${r.slice(0, 90).replace(/\n/g, ' ')}` };
+}]);
+notebookCase('allergy skin: no products, refers to a dermatologist', 'allergy skin e moisturiser konta use korbo ?',
+  (j, r) => noCards(j) && /ডার্মাটোলজিস্ট|dermatolog|ডাক্তার|doctor/i.test(r));
+notebookCase('reworded allergy (itchy, red): no products', 'amar mukhe chulkani hoy lal hoye jay, kon cream dile valo hobe?',
+  (j) => noCards(j));
+notebookCase('English sensitive/itchy skin: no products', 'My skin gets red and itchy with most creams. Which moisturizer should I buy?',
+  (j) => noCards(j));
+notebookCase('pregnancy: no products', 'ami pregnant, dot & key watermelon sunscreen use korte parbo?',
+  (j) => noCards(j));
+notebookCase('cystic acne: no products, 400 TK dermatologist form', 'puj wala boro bron, khub betha, ki lagabo?',
+  (j, r) => noCards(j) && /tinyurl\.com\/2wk9pxj8|৪০০|400/.test(r));
+notebookCase('whitening (Bangla script): not available, no products', 'ফর্সা হওয়ার জন্য কোন ক্রিম ভালো?',
+  (j) => noCards(j));
+notebookCase('under 18: no products', 'amar 15 bochor, bron er jonno face wash din',
+  (j, r) => noCards(j) && /18|১৮/.test(r));
+notebookCase('acne + niacinamide: not suitable, no products', 'bron er jonno niacinamide valo hobe?',
+  (j, r) => noCards(j) && /suitable|সুইটেবল|সুইটেবেল|না/i.test(r));
+notebookCase('general product ask without profile: asks first, no products', 'normal skin er jonno sunscreen konta use korbo ?',
+  (j, r) => noCards(j) && (!!profileFormOf(j) || /\?/.test(r)));
+notebookCase('bKash: merchant number', 'taka kivabe pathabo bkash e?', (j, r) => /01780303004|০১৭৮০৩০৩০০৪/.test(r));
+notebookCase('delivery outside Dhaka: 100 TK', 'dhakar baire koto taka delivery?', (j, r) => /100|১০০/.test(r));
+notebookCase('shop address: Rankin Square, not "online only"', 'dokan ta kothay apnader?', (j, r) => /Rankin|র‍্যাংকিন|র্যাংকিন|Wari|ওয়ারী/i.test(r));
+notebookCase('importer sticker: yes on every product, no hotline deflection', 'apnader product e ki importer sticker deya ache ?',
+  (j, r) => /স্টিকার|sticker/i.test(r) && !/\+?8801775/.test(r));
+notebookCase('non-notebook product question still shows products', 'cosrx snail mucin essence er dam koto?', (j) => cardsOf(j).length > 0);
+// ask-first is for SKINCARE only (live 2026-11-01 "lipstick dekhan" got the questions instead)
+notebookCase('makeup browse is not held back for skin questions', 'lipstick dekhan', (j) => cardsOf(j).length > 0);
+
+// ---- daily message limit ------------------------------------------------------
+// Uses the live daily_limit (bot_settings) without changing it: a counted
+// customer's `remaining` must drop by exactly 1 per message, and an eval/staff
+// test run (eval: true) is never counted.
+battery.push(['daily limit: each message counts once, remaining drops by 1', 'limit', true, async () => {
+  const uid = 'tmp_eval_limit_' + Date.now().toString(36);
+  const a = await postChat({ message: 'hi', user_id: uid });
+  const b = await postChat({ message: 'serum kon time e use kora better?', user_id: uid });
+  const ra = a.json?.remaining, rb = b.json?.remaining;
+  return { ok: typeof ra === 'number' && typeof rb === 'number' && ra - rb === 1, detail: `remaining ${ra} -> ${rb}` };
+}]);
+battery.push(['daily limit: eval/staff test runs are not counted', 'limit', true, async () => {
+  const { json } = await postChat({ message: 'hi', eval: true });
+  return { ok: json != null && json.remaining === undefined && !json.limited, detail: `remaining=${json?.remaining}` };
 }]);
 
 // ---------------------------------------------------------------------------

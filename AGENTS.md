@@ -37,6 +37,16 @@ and load-bearing; don't add a DB connection to the store as a shortcut.
 
 ## 2. The one rule that matters most: **the n8n UI is not the source of truth, the repo is**
 
+> **Exception — staff-owned data (2026-11-01).** The repo owns the *workflows*; staff own four n8n
+> Data Tables, edited from **perfecto-ai-ops → AI Apps → fastmart-ai → Assistant** (never the n8n UI):
+> `support_notebook` (customer question → staff answer + lesson; matched by meaning in the
+> `notebook-tools` workflow), `bot_settings` (daily limit, limit replies, matching knobs, and the AI
+> model choice `chat_provider`/`chat_model`/`chat_credential`), `daily_usage` and `change_history`.
+> `dev/setup-notebook.mjs` only ever ADDS missing tables/rows/settings, and `dev/sync.mjs` builds
+> with the model recorded in `bot_settings` — so a deploy never undoes a staff change. To change a
+> staff answer, change the row (or ask staff to), not `dev/notebook-seed.js`, which is only the
+> first fill. An explicit `MODEL_PROVIDER`/`MODEL` env var still overrides the model for one run.
+
 It is *possible* to open the n8n editor and hand-edit a node. **Don't, except
 for a scoped hotfix you immediately port back into `dev/build-main.mjs` /
 `dev/build-workflows.mjs` / `dev/prompts.js` in the same session.** Every time

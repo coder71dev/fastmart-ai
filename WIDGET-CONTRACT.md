@@ -26,7 +26,7 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
   "message": "find me a serum under 2000 taka",   // user text (falls back to "Hi" if omitted)
   "user_id": "tmp-widget-<uuid>",                   // REQUIRED — the workflow 400s with {"error":"user_id is required"} if missing
   "conversation_id": "tmp-widget-<uuid>",           // optional — the chat-memory key; falls back to user_id when omitted
-  "profile": { "skin": "Oily", "concern": "Acne", "budget": "Under Tk 1500" }, // optional, quiz
+  "profile": { "skin": "Oily", "age": "25-34", "concern": "Acne", "budget": "Under Tk 1500" }, // optional, quiz
   "action": { "type": "variant-selected", "product_id": 100, "variant": "45ml", "quantity": 1 } // optional; resumes a human-in-the-loop step
 }
 ```
@@ -45,9 +45,13 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
   "conversation_id": "string",       // exact echo of the `user_id` sent in the request
   "blocks": [ ...OutputBlock... ],   // may be empty array
   "suggestions": ["string", ...],    // optional; guided next-step chips (<=3 shown)
-  "token_usage": null                // reserved; see note below
+  "token_usage": null,               // reserved; see note below
+  "remaining": 17,                   // optional; messages this customer has left today (absent = not counted)
+  "limited": true                    // only on the daily-limit reply; reply then holds the polite limit message
 }
 ```
+
+- **Daily message limit (2026-11-01).** Each `user_id` (backed up by the caller's IP) may send `daily_limit` messages per Dhaka calendar day (n8n Data Table `bot_settings`, default 20, edited from perfecto-ai-ops). Past the limit the turn returns HTTP 200 with `limited: true`, `remaining: 0`, empty `blocks`, and the staff-written limit message in `reply` — no LLM call. Simple facts marked "free after limit" in the staff notebook are still answered. Requests with `"eval": true` (eval harness, perfecto-ai-ops auto-tests) and `user_id`s starting `ops-test-` are never counted.
 
 - `suggestions` is **optional**. When present, the widget renders them as the "Suggested next steps" chips under the reply and they take precedence over the client-derived ones. When absent, the widget derives contextual chips from the turn's blocks and the customer's profile, so every reply still offers a clear next step. A legacy `chips` array is also accepted.
 
@@ -120,7 +124,9 @@ Emitted when the order specialist finds an order. **It carries no personal data*
 
 The widget maps `status` onto a 5-step fulfilment flow (Order Placed → Confirmed → **Packaging** → Out for Delivery → Delivered; `cancelled`/`returned`/`failed` render as a terminal state). Keep that map in step with the store's own `delivery_status` values — they are the store's, not ours (`pending`, `confirmed`, `hold`, `packaging`, `picked_up`, `on_the_way`, `shipped`, `delivered` — confirmed against the `orders` table). The ETA line is hidden once the order is delivered or terminal.
 
-### `profile-questions` (the in-chat skin quiz — missing skin type / concern / budget)
+### `profile-questions` (the in-chat skin quiz — missing skin type / age / concern / budget)
+
+> **Changed 2026-11-01 (client review):** for SKINCARE, staff always ask before suggesting, so when skin type or age is unknown the turn returns this block with **no product cards** (makeup, hair, body and fragrance are not held back). `age` is a new field (`field_key: "age"`). The paragraph below describes the older answer-first behaviour, which still applies once skin type and age are known (concern/budget never block a recommendation).
 
 Emitted on a general product-recommendation turn (browsing, "what should I use for X", a routine) when the orchestrator decides some of **skin type / concern / budget** aren't known yet — from `CURRENT SHOPPING CONTEXT`'s saved profile or anything the customer already said this conversation. The recommendation itself is never gated on this — the agent answers the question first and attaches this block alongside it, it does not withhold or delay the answer.
 

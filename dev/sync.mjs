@@ -52,7 +52,9 @@ try { credConfig = JSON.parse(readFileSync(CRED_FILE, 'utf8')); } catch {}
 // outright ("Credential ... does not exist for type googlePalmApi"), verified
 // live 2026-10-14. Deferring to MODEL_NODE fixes it for every provider, not
 // just gemini.
-const MODEL_CRED_NAME = process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || Object.values(MODEL_NODE.credentials)[0].name;
+// After the first sync this is normally replaced by bot_settings — see
+// adoptModelFromSettings() below.
+let MODEL_CRED_NAME = process.env.MODEL_CRED_NAME || credConfig.MODEL_CRED_NAME || Object.values(MODEL_NODE.credentials)[0].name;
 const PG_CRED_NAME = process.env.PG_CRED_NAME || credConfig.PG_CRED_NAME || 'fastmart Postgres (fastmart_ai DB)';
 const WEBHOOK_JWT_CRED_NAME = process.env.WEBHOOK_JWT_CRED_NAME || credConfig.WEBHOOK_JWT_CRED_NAME || 'fastmart Webhook JWT';
 
@@ -71,6 +73,9 @@ const SPECIALISTS = [
   { file: 'orderSpecialist.json', name: 'specialist-orders', env: 'ORDER_SPECIALIST_ID' },
 ];
 const MAIN = { file: 'agentChat.json', name: 'agent-chat (prod webhook)' };
+// Staff notebook matching + daily message limit; called by MAIN as a
+// sub-workflow, so it is deployed before MAIN is built (like the tools above).
+const NOTEBOOK = { file: 'notebookTools.json', name: 'notebook-tools', env: 'NOTEBOOK_TOOLS_ID' };
 
 function docker(...args) {
   const r = spawnSync('docker', args, { encoding: 'utf8' });
@@ -175,7 +180,7 @@ function verify(ids) {
     const out = [];
     for (const n of wf.nodes) {
       const wid = n.parameters && n.parameters.workflowId && n.parameters.workflowId.value;
-      if (wid && n.type === '@n8n/n8n-nodes-langchain.toolWorkflow') out.push([n.name, wid]);
+      if (wid && (n.type === '@n8n/n8n-nodes-langchain.toolWorkflow' || n.type === 'n8n-nodes-base.executeWorkflow')) out.push([n.name, wid]);
     }
     return out;
   };
@@ -190,9 +195,10 @@ function verify(ids) {
     [ids.SUPPORT_SPECIALIST_ID, 'specialist-support'],
     [ids.CART_SPECIALIST_ID, 'specialist-cart'],
     [ids.ORDER_SPECIALIST_ID, 'specialist-orders'],
+    [ids.NOTEBOOK_TOOLS_ID, 'notebook-tools'],
   ]);
 
-  const files = [...TOOL_WORKFLOWS, ...SPECIALISTS, MAIN].map((w) => w.file);
+  const files = [...TOOL_WORKFLOWS, ...SPECIALISTS, NOTEBOOK, MAIN].map((w) => w.file);
   let refCount = 0;
   for (const file of files) {
     for (const [nodeName, wid] of toolRefs(readWf(file))) {
@@ -271,6 +277,38 @@ function verify(ids) {
   console.log(`verify OK: ${refCount} tool references + ${seenCreds.size} credentials resolve on this instance`);
 }
 
+// ---- AI model ownership ------------------------------------------------------
+//
+// Staff switch the chat model / provider / credential from perfecto-ai-ops,
+// which writes bot_settings (chat_provider, chat_model, chat_credential) and
+// patches the deployed model nodes. A plain developer deploy must NOT undo
+// that, so the build takes its model from bot_settings when it is set there.
+// The very first sync copies the current choice (.n8n-credentials.json / env)
+// into bot_settings once; from then on bot_settings owns it.
+// An explicit MODEL_PROVIDER/MODEL/MODEL_CRED_NAME env var still wins for a
+// one-off developer run.
+async function adoptModelFromSettings() {
+  const { readBotSettings, addMissingSettings } = await import('./setup-notebook.mjs');
+  const added = await addMissingSettings({
+    chat_provider: MODEL_NODE.provider,
+    chat_model: MODEL_NODE.model,
+    chat_credential: MODEL_CRED_NAME,
+  }, 'AI model used for replies. Change it from perfecto-ai-ops (Bot Settings), not here.');
+  if (added.length) console.log(`      bot_settings now owns the AI model choice (${added.join(', ')})`);
+  const s = await readBotSettings();
+  const explicit = process.env.MODEL_PROVIDER || process.env.MODEL || process.env.MODEL_CRED_NAME;
+  if (explicit) {
+    console.log('      AI model: using MODEL_* from env for this run (bot_settings left as is)');
+    return;
+  }
+  if (s.chat_provider) process.env.MODEL_PROVIDER = s.chat_provider;
+  if (s.chat_model) process.env.MODEL = s.chat_model;
+  if (s.chat_credential) MODEL_CRED_NAME = process.env.MODEL_CRED_NAME = s.chat_credential;
+  // the provider's default credential id must not leak in under another name
+  delete process.env.MODEL_CRED_ID;
+  console.log(`      AI model (from bot_settings): ${s.chat_provider} -> ${s.chat_model} via "${s.chat_credential}"`);
+}
+
 // ---- main --------------------------------------------------------------------
 
 async function main() {
@@ -278,6 +316,11 @@ async function main() {
   if (!owner) throw new Error('could not find the n8n owner user (set N8N_OWNER_ID)');
   process.env.N8N_OWNER_ID = owner;
   console.log(`n8n owner: ${owner}`);
+
+  // staff-owned tables first (only MISSING tables/rows/settings are added —
+  // rows staff edited from perfecto-ai-ops are never overwritten)
+  sh('setup-notebook.mjs', CHECK_ONLY ? ['--check'] : []);
+  if (!CHECK_ONLY) await adoptModelFromSettings();
 
   const existing = workflowIdsByName();
   const missing = [...TOOL_WORKFLOWS, ...SPECIALISTS, MAIN].filter((w) => !existing.has(w.name));
@@ -292,7 +335,11 @@ async function main() {
   const modelCred = resolveCred(process.env.MODEL_CRED_ID, MODEL_CRED_NAME, creds);
   const pgCred = resolveCred(process.env.PG_CRED_ID, PG_CRED_NAME, creds);
   const webhookJwtCred = resolveCred(process.env.WEBHOOK_JWT_CRED_ID, WEBHOOK_JWT_CRED_NAME, creds);
+  // notebook meaning-matching uses Gemini embeddings, whatever chat model runs
+  const embedCred = resolveCred(process.env.EMBED_CRED_ID, process.env.EMBED_CRED_NAME || credConfig.EMBED_CRED_NAME || 'Gemini API Palm v3', creds);
   const ids = {
+    EMBED_CRED_ID: embedCred.id,
+    EMBED_CRED_NAME: embedCred.name,
     MODEL_CRED_ID: modelCred.id,
     MODEL_CRED_NAME: modelCred.name,
     PG_CRED_ID: pgCred.id,
@@ -326,6 +373,9 @@ async function main() {
     ids.CART_SPECIALIST_ID = existing.get('specialist-cart');
     ids.ORDER_SPECIALIST_ID = existing.get('specialist-orders');
     console.log(`      product=${ids.PRODUCT_DISCOVERY_ID} support=${ids.SUPPORT_SPECIALIST_ID} cart=${ids.CART_SPECIALIST_ID} orders=${ids.ORDER_SPECIALIST_ID}`);
+    run('build-notebook-tools.mjs', ids);
+    ids.NOTEBOOK_TOOLS_ID = existing.get(NOTEBOOK.name);
+    if (!ids.NOTEBOOK_TOOLS_ID) throw new Error('--check: notebook-tools not on this instance — run sync.mjs without --check first');
     console.log('\n[3/3] main agent');
     run('build-main.mjs', ids);
 
@@ -355,6 +405,14 @@ async function main() {
     ids.CART_SPECIALIST_ID = afterSpecs.get('specialist-cart');
     ids.ORDER_SPECIALIST_ID = afterSpecs.get('specialist-orders');
     console.log(`      product=${ids.PRODUCT_DISCOVERY_ID} support=${ids.SUPPORT_SPECIALIST_ID} cart=${ids.CART_SPECIALIST_ID} orders=${ids.ORDER_SPECIALIST_ID}`);
+
+    // staff notebook + daily limit (its tables were set up at the start)
+    console.log('\n      staff notebook + daily limit');
+    run('build-notebook-tools.mjs', ids);
+    deploy(NOTEBOOK.file);
+    ids.NOTEBOOK_TOOLS_ID = workflowIdsByName().get(NOTEBOOK.name);
+    console.log(`      notebookTools=${ids.NOTEBOOK_TOOLS_ID}`);
+
     console.log('\n[3/3] main agent');
     run('build-main.mjs', ids);
     deploy(MAIN.file);
@@ -362,6 +420,10 @@ async function main() {
 
   console.log('');
   verify(ids);
+  if (!CHECK_ONLY) {
+    try { sh('notebook-embed.mjs', []); }
+    catch (e) { console.warn('WARN: notebook embeddings not refreshed (' + e.message + ') — rerun: node dev/notebook-embed.mjs'); }
+  }
   console.log('\ndone.');
 }
 
