@@ -562,6 +562,10 @@ function stripFooter(s) {
     .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
     .replace(/META_PROFILE_ASK:[^\\n]*\\n?/gi, '')
     .replace(/META_GENDER:[^\\n]*\\n?/gi, '')
+    // The language rule tells the orchestrator to append "(reply in Bengali)"
+    // to a specialist task; live 2026-11-04 exec 5724 the specialist echoed it
+    // back and it reached the customer. It is an instruction, never copy.
+    .replace(/\\s*\\(\\s*(?:please\\s+)?(?:reply|respond|answer)\\s+in\\s+[a-zA-Z ]+\\)\\s*/gi, ' ')
     .trim();
 }
 function normalizeCurrency(s) {
@@ -863,6 +867,19 @@ try {
   const ranTool = ($('AI Agent').first().json.intermediateSteps || []).length > 0;
   if (!ranTool && /^(hi+|hello+|hey+|hekko|helo|hlw|salam|assalamu ?alaikum|as-?salamu ?alaikum|good (morning|afternoon|evening)|হাই|হ্যালো|আসসালামু আলাইকুম)[\\s!.,?]*$/i.test(greet)) profileAsk = [];
 } catch {}
+// Safety notebook examples (allergy, pregnancy, cystic/thin skin) never
+// recommend a product, so they must never ask the skin quiz either. The
+// ask-first example can match the same message (live 2026-11-04 exec 5696),
+// so the safety decision wins: clear the ask here and hold any product cards
+// at the mustAskFirst backstop below.
+let safetyMatched = false;
+try {
+  // Top 3 only: a safety example that is merely the 4th/5th near-miss must not
+  // kill a valid recommendation for an adult with healthy skin.
+  const nbm = (($('Apply Notebook').first().json || {}).notebookMatches || []).slice(0, 3);
+  safetyMatched = ['allergy-skin', 'pregnancy-breastfeeding', 'cystic-acne', 'thin-skin-veins', 'age-18-plus'].some((k) => nbm.includes(k));
+} catch {}
+if (safetyMatched) profileAsk = [];
 // The staff notebook's ask-first example is the highest authority on a general
 // skincare ask, but the model often asks in PROSE and writes
 // META_PROFILE_ASK: [] (prod 2026-11-03 exec 5532) - then recommends on the
@@ -871,7 +888,7 @@ try {
 // backstop below then holds the cards and the form asks properly.
 let askFirstMatched = false;
 try { askFirstMatched = (($('Apply Notebook').first().json || {}).notebookMatches || []).includes('ask-before-suggesting'); } catch {}
-if (askFirstMatched) {
+if (askFirstMatched && !safetyMatched) {
   const missing = ['skin type', 'age'].filter((f) => !String(knownProfile[f === 'skin type' ? 'skin' : f] || '').trim());
   profileAsk = ['skin type', 'age', 'concern', 'budget'].filter((f) => profileAsk.includes(f) || missing.includes(f));
 }
@@ -1254,6 +1271,13 @@ try {
   // Skincare only: makeup/hair/body/fragrance never needed skin type first
   // (live 2026-11-01 "lipstick dekhan" got the questions instead of lipsticks).
   const nonSkincare = /lip|liner|mascara|kajal|kohl|eyeshadow|eye ?shadow|foundation|concealer|blush|highlighter|primer|compact|powder|makeup|make up|nail|perfume|fragrance|body ?spray|deo|shampoo|conditioner|hair|brush|sponge|লিপ|লিপস্টিক|কাজল|মাসকারা|ফাউন্ডেশন|মেকআপ|নেইল|পারফিউম|শ্যাম্পু|চুল/i.test(cmG);
+  // Safety examples (allergy, pregnancy, cystic/thin skin) never show products,
+  // even if the model ignored the golden rule and produced cards.
+  if (safetyMatched) {
+    for (let k = blocks.length - 1; k >= 0; k--) {
+      if (['product-grid', 'product-carousel', 'routine', 'comparison'].includes(blocks[k] && blocks[k].type)) blocks.splice(k, 1);
+    }
+  }
   const mustAskFirst = !nonSkincare && (profileAsk.includes('skin type') || profileAsk.includes('age'));
   if (!answeredNow && !cartTurn && mustAskFirst) {
     let removed = 0;

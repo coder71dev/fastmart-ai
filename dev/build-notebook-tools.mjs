@@ -180,6 +180,7 @@ if (golden.length || examples.length) {
     for (const r of golden) lines.push('- ' + r.lesson);
   }
   lines.push('ADDRESS: never default to "ম্যাম"/"mam". When the customer\\'s gender is unknown, write "স্যার/ম্যাম" in Bengali or "Sir/Ma\\'am" in English. If CUSTOMER PROFILE shows Gender (or the customer said it), use স্যার/Sir for a man and ম্যাম/Ma\\'am for a woman. The staff examples below say ম্যাম as staff shorthand — adapt it, never copy it blindly.');
+  lines.push('CUSTOMER PROFILE FIRST: if it already shows Skin and Age, do NOT repeat the ask-first questions from an example — go straight to the recommendation.');
   if (examples.length) {
     lines.push('');
     lines.push('Past customer questions most similar in meaning to this message, with how staff answered. Follow the SAME decision (e.g. if staff suggested no product, suggest no product, show no product cards, write META_PROFILE_ASK: [] and never ask about budget) and keep the same FACTS exact (numbers, links, policy) — but write the reply yourself; do not paste the staff text.');
