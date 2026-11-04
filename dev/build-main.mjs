@@ -319,7 +319,15 @@ const guidance = typeof n.guidance === 'string' ? n.guidance : '';
 if (guidance) p.systemPrompt = p.systemPrompt + '\\n\\n' + guidance;
 p.limited = n.allowed === false;
 p.remaining = (typeof n.remaining === 'number') ? n.remaining : null;
-p.notebookMatches = Array.isArray(n.matches) ? n.matches.map(m => m.entry_key) : [];
+const ms = Array.isArray(n.matches) ? n.matches : [];
+p.notebookMatches = ms.map(m => m.entry_key);
+// Full examples (staff_answer/lesson/copy_exactly/strong) for RESPONSE_CODE's
+// deterministic repairs. exactReply lets the graph answer a COPY EXACTLY
+// match without calling the model at all (see "Exact Notebook Reply?").
+p.notebookExamples = ms;
+// strong = example 1 is the same question (not just the closest of a thin
+// set), so a COPY EXACTLY fact can never hijack an unrelated message.
+p.exactReply = (ms[0] && ms[0].copy_exactly && ms[0].strong && ms[0].staff_answer) ? String(ms[0].staff_answer) : '';
 p.limitReplyBn = n.limit_reply_bn || '';
 p.limitReplyEn = n.limit_reply_en || '';
 return [{ json: p }];
@@ -333,6 +341,23 @@ const bn = looksBengali(p.chatInput || '');
 const reply = (bn ? p.limitReplyBn : [p.limitReplyBn, p.limitReplyEn].filter(Boolean).join('\\n\\n'))
   || 'Sorry, today\\'s message limit is over. Please message us again tomorrow, or call +8801775-423477.';
 return [{ json: { reply, conversation_id: p.conversationId || null, blocks: [], suggestions: [], token_usage: null, remaining: 0, limited: true } }];
+`;
+
+// COPY EXACTLY notebook entries (fixed store facts: delivery charge, address,
+// bKash, return policy, the cystic-acne form...) never need the model: the
+// staff text IS the answer. Answering it here also removes the old failure
+// where the orchestrator delegated to support_specialist and came back with a
+// paraphrased English summary (prod 2026-11-03 exec 5551).
+const NOTEBOOK_REPLY_CODE = `
+const p = $('Apply Notebook').first().json;
+return [{ json: {
+  reply: String(p.exactReply || ''),
+  conversation_id: p.conversationId || null,
+  blocks: [],
+  suggestions: [],
+  token_usage: null,
+  remaining: (typeof p.remaining === 'number') ? p.remaining : null,
+} }];
 `;
 
 // ---------------------------------------------------------------------------
@@ -432,6 +457,33 @@ const RESPONSE_CODE = `${LANG_DETECT}
 const d = $('AI Agent').first().json.output;
 const raw = typeof d === 'string' ? d : (d && typeof d === 'object' && 'output' in d ? d.output : JSON.stringify(d));
 let replyTxt = typeof d === 'string' ? d : String(raw ?? '');
+// The model sometimes echoes the notebook header itself as the answer
+// ("STAFF NOTEBOOK: Retinal is not for beginners...", verified live
+// 2026-11-03 exec 5542) - the text after it is INTERNAL guidance, never
+// customer copy. Strip the header, then replace the whole leaked note with the
+// matched staff answer (chosen by word overlap with the leaked lesson).
+let notebookExamples = [];
+try {
+  const a = $('Apply Notebook').first().json || {};
+  notebookExamples = Array.isArray(a.notebookExamples) ? a.notebookExamples : [];
+} catch {}
+let notebookLeak = false;
+if (/^\\s*STAFF\\s+NOTEBOOK\\b/i.test(replyTxt)) {
+  notebookLeak = true;
+  replyTxt = replyTxt.replace(/^\\s*STAFF\\s+NOTEBOOK\\b[^\\n]*?:\\s*/i, '').trim();
+}
+if (notebookLeak) {
+  const words = replyTxt.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3);
+  let best = null, bestScore = 0;
+  for (const m of notebookExamples) {
+    const hay = (String((m && m.lesson) || '') + ' ' + String((m && m.staff_answer) || '')).toLowerCase();
+    let sc = 0;
+    for (const w of words) if (hay.indexOf(w) !== -1) sc++;
+    if (sc > bestScore) { bestScore = sc; best = m; }
+  }
+  const staff = (best && best.staff_answer) || (notebookExamples[0] && notebookExamples[0].staff_answer) || '';
+  if (staff) replyTxt = String(staff);
+}
 // Known failure mode - verified live against prod executions 2026-10-19..22
 // (5 occurrences across 3 days for one customer alone): the model's whole
 // "reply" is sometimes the literal tool-invocation string it meant to call
@@ -784,11 +836,12 @@ try {
 } catch {}
 // Never ask for a field the profile already has: live 2026-11-01 the model
 // asked "what is your age?" with Age: 25-34 right there in CUSTOMER PROFILE.
+let knownProfile = {};
 try {
   const pi = $('Prepare Input').first().json || {};
-  const known = Object.assign({}, pi.profile || {}, (pi.action && pi.action.type === 'profile-answers' && pi.action.answers) || {});
+  knownProfile = Object.assign({}, pi.profile || {}, (pi.action && pi.action.type === 'profile-answers' && pi.action.answers) || {});
   const keyOfField = { 'skin type': 'skin', age: 'age', concern: 'concern', budget: 'budget' };
-  profileAsk = profileAsk.filter((f) => !String(known[keyOfField[f]] || '').trim());
+  profileAsk = profileAsk.filter((f) => !String(knownProfile[keyOfField[f]] || '').trim());
 } catch {}
 // A bare greeting is not a recommendation turn: live 2026-10-29 one "hello"
 // got the skin/concern/budget form and two other "hello"s did not. Drop the
@@ -798,6 +851,18 @@ try {
   const ranTool = ($('AI Agent').first().json.intermediateSteps || []).length > 0;
   if (!ranTool && /^(hi+|hello+|hey+|hekko|helo|hlw|salam|assalamu ?alaikum|as-?salamu ?alaikum|good (morning|afternoon|evening)|হাই|হ্যালো|আসসালামু আলাইকুম)[\\s!.,?]*$/i.test(greet)) profileAsk = [];
 } catch {}
+// The staff notebook's ask-first example is the highest authority on a general
+// skincare ask, but the model often asks in PROSE and writes
+// META_PROFILE_ASK: [] (prod 2026-11-03 exec 5532) - then recommends on the
+// next turn with age still unknown (exec 5561). When that example matched,
+// fill the missing fields from the known profile ourselves; the mustAskFirst
+// backstop below then holds the cards and the form asks properly.
+let askFirstMatched = false;
+try { askFirstMatched = (($('Apply Notebook').first().json || {}).notebookMatches || []).includes('ask-before-suggesting'); } catch {}
+if (askFirstMatched) {
+  const missing = ['skin type', 'age'].filter((f) => !String(knownProfile[f === 'skin type' ? 'skin' : f] || '').trim());
+  profileAsk = ['skin type', 'age', 'concern', 'budget'].filter((f) => profileAsk.includes(f) || missing.includes(f));
+}
 // The orchestrator often drops META/marker lines when rephrasing, so also read
 // the specialists' raw tool results (intermediateSteps observations). The
 // product specialist always appends META_PRODUCT_IDS + [BLOCK product-grid];
@@ -1600,6 +1665,36 @@ nodes.push(
     position: pos(720, -620),
   }),
 );
+// COPY EXACTLY notebook entries answer here, before (and instead of) the
+// model: the staff text is already the customer-facing answer, so there is
+// nothing for an LLM to paraphrase (prod 2026-11-03 exec 5551 replied with an
+// English summary of the store policy even though the exact Bangla staff text
+// was in context). Runs only on the NOT-limited branch - the limit still wins.
+nodes.push(
+  node({
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 3 },
+        combinator: 'and',
+        conditions: [{ id: 'exact-reply', leftValue: "={{ $json.exactReply || '' }}", rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } }],
+      },
+      options: {},
+    },
+    name: 'Exact Notebook Reply?',
+    type: 'n8n-nodes-base.if',
+    typeVersion: 2.3,
+    position: pos(1040, -620),
+  }),
+);
+nodes.push(
+  node({
+    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: NOTEBOOK_REPLY_CODE },
+    name: 'Notebook Reply',
+    type: 'n8n-nodes-base.code',
+    typeVersion: 2,
+    position: pos(1200, -620),
+  }),
+);
 nodes.push(
   node({
     parameters: {
@@ -1755,9 +1850,13 @@ connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main',
 connections['Notebook Request'] = { main: [[{ node: 'Notebook Check', type: 'main', index: 0 }]] };
 connections['Notebook Check'] = { main: [[{ node: 'Apply Notebook', type: 'main', index: 0 }]] };
 connections['Apply Notebook'] = { main: [[{ node: 'Over Daily Limit?', type: 'main', index: 0 }]] };
-// true -> polite limit reply (no LLM call); false -> the normal turn
-connections['Over Daily Limit?'] = { main: [[{ node: 'Limit Reply', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
+// true -> polite limit reply (no LLM call); false -> check for a COPY EXACTLY
+// notebook answer first, then the normal turn.
+connections['Over Daily Limit?'] = { main: [[{ node: 'Limit Reply', type: 'main', index: 0 }], [{ node: 'Exact Notebook Reply?', type: 'main', index: 0 }]] };
 connections['Limit Reply'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
+// true -> staff text straight to the customer; false -> AI Agent + profile form.
+connections['Exact Notebook Reply?'] = { main: [[{ node: 'Notebook Reply', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
+connections['Notebook Reply'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
 connections['AI Agent'] = { main: [[{ node: 'Wait For Profile Questions', type: 'main', index: 0 }]] };

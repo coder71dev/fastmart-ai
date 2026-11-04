@@ -168,6 +168,10 @@ const examples = scored.filter(x => x.sim >= floor).slice(0, k);
 const golden = rows.filter(r => r.golden_rule && r.lesson);
 
 const lines = [];
+// Whether example 1 is the same question (high score and clearly ahead of the
+// runner-up). Travels to agent-chat's Apply Notebook so a COPY EXACTLY entry
+// can be answered without calling the model at all (dev/build-main.mjs).
+let strong = false;
 if (golden.length || examples.length) {
   lines.push('STAFF NOTEBOOK — how Perfecto\\'s support staff answer. This OVERRIDES your own general knowledge and any product search.');
   if (golden.length) {
@@ -191,7 +195,8 @@ if (golden.length || examples.length) {
     // bKash number — so say plainly: answer it yourself, no tool.
     const top = examples[0], second = scored[1];
     const strongAt = num('strong_match', 0.87);
-    if (top.sim >= strongAt && (!second || top.sim - second.sim >= 0.03)) {
+    strong = !!top && top.sim >= strongAt && (!second || top.sim - second.sim >= 0.03);
+    if (strong) {
       lines.push('STRONG MATCH: example 1 is the same question as this message. Answer it directly from that staff answer now' + (top.r.copy_exactly ? ' (copy it exactly)' : '') + ' — do NOT call support_specialist, product_discovery or any other tool for it.');
     } else {
       lines.push('If none of these examples really fits the message, ignore them and answer normally — but the golden rules still apply.');
@@ -199,7 +204,19 @@ if (golden.length || examples.length) {
   }
 }
 const guidance = lines.join('\\n');
-const matches = examples.map(x => ({ entry_key: x.r.entry_key, similarity: x.sim, customer_question: x.r.customer_question, copy_exactly: !!x.r.copy_exactly }));
+// staff_answer + lesson travel too: agent-chat uses them to repair a leaked
+// guidance header deterministically (prod 2026-11-03 exec 5542) and to answer
+// a COPY EXACTLY match without an LLM call (exec 5551). Internal only.
+const matches = examples.map(x => ({
+  entry_key: x.r.entry_key,
+  similarity: x.sim,
+  customer_question: x.r.customer_question,
+  copy_exactly: !!x.r.copy_exactly,
+  strong: false,
+  staff_answer: String(x.r.staff_answer || ''),
+  lesson: String(x.r.lesson || ''),
+}));
+if (matches[0]) matches[0].strong = strong;
 const nearMisses = scored.filter(x => x.sim < minSim).slice(0, 3).map(x => ({ entry_key: x.r.entry_key, similarity: x.sim }));
 
 const base = { job: req.action, guidance, matches, near_misses: nearMisses, golden_count: golden.length, embedded: !!q };
