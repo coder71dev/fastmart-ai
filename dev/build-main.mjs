@@ -80,6 +80,28 @@ function looksBengali(s) {
 }
 `;
 
+// Address terms: the staff notebook examples all say "ম্যাম", but the customer's
+// gender is usually unknown. Default to the neutral "স্যার/ম্যাম" / "Sir/Ma'am";
+// use the specific term only when CUSTOMER PROFILE carries a gender. Applied to
+// the final text, so it also normalizes a specialist's verbatim answer.
+const ADDRESS_TERMS_CODE = `
+function addressTerms(gender) {
+  const g = String(gender || '').trim().toLowerCase();
+  if (/^(m|male|man|boy|chele|ছেলে|পুরুষ)$/.test(g)) return { bn: 'স্যার', en: 'Sir' };
+  if (/^(f|female|woman|girl|meye|মেয়ে|মহিলা|নারী)$/.test(g)) return { bn: 'ম্যাম', en: "Ma'am" };
+  return { bn: 'স্যার/ম্যাম', en: "Sir/Ma'am" };
+}
+function neutralizeAddress(text, gender) {
+  const a = addressTerms(gender);
+  return String(text == null ? '' : text)
+    // Bengali needs an explicit boundary: "সমস্যার" (problem) contains the
+    // letters "স্যার", and \b is ASCII-only, so a plain replace corrupted
+    // common words. The lookbehind/ahead keep it to a standalone address.
+    .replace(/(?<![\\u0980-\\u09FF\\u200c\\u200d])(?:স্যার\\s*\\/\\s*ম্যাম|ম্যাম|স্যার)(?![\\u0980-\\u09FF])/g, a.bn)
+    .replace(/\\b(?:sir\\s*\\/\\s*ma'?am|ma'?am|madam|mam|sir)\\b/gi, a.en);
+}
+`;
+
 // ---------------------------------------------------------------------------
 // Prepare Input + context builder (Code)
 // ---------------------------------------------------------------------------
@@ -254,6 +276,9 @@ const effProfile = {
   age: (submittedAnswers && submittedAnswers.age) || (profile && profile.age) || null,
   concern: (submittedAnswers && submittedAnswers.concern) || (profile && profile.concern) || null,
   budget: (submittedAnswers && submittedAnswers.budget) || (profile && profile.budget) || null,
+  // Optional: only the storefront can supply it today, but when present the
+  // reply uses স্যার or ম্যাম instead of the neutral স্যার/ম্যাম.
+  gender: (submittedAnswers && submittedAnswers.gender) || (profile && profile.gender) || null,
 };
 
 const parts = [];
@@ -276,7 +301,8 @@ parts.push(cartTxt);
 parts.push('CUSTOMER PROFILE: Skin: ' + (effProfile.skin || 'not provided') +
   ' | Age: ' + (effProfile.age || 'not provided') +
   ' | Concern: ' + (effProfile.concern || 'not provided') +
-  ' | Budget: ' + (effProfile.budget || 'not provided'));
+  ' | Budget: ' + (effProfile.budget || 'not provided') +
+  (effProfile.gender ? ' | Gender: ' + effProfile.gender : ''));
 
 if (actionLine) parts.push(actionLine);
 
@@ -321,43 +347,23 @@ p.limited = n.allowed === false;
 p.remaining = (typeof n.remaining === 'number') ? n.remaining : null;
 const ms = Array.isArray(n.matches) ? n.matches : [];
 p.notebookMatches = ms.map(m => m.entry_key);
-// Full examples (staff_answer/lesson/copy_exactly/strong) for RESPONSE_CODE's
-// deterministic repairs. exactReply lets the graph answer a COPY EXACTLY
-// match without calling the model at all (see "Exact Notebook Reply?").
+// Full examples (staff_answer/lesson) for RESPONSE_CODE's leak repair. The
+// notebook is guidance, not canned text: the model always writes the reply.
 p.notebookExamples = ms;
-// strong = example 1 is the same question (not just the closest of a thin
-// set), so a COPY EXACTLY fact can never hijack an unrelated message.
-p.exactReply = (ms[0] && ms[0].copy_exactly && ms[0].strong && ms[0].staff_answer) ? String(ms[0].staff_answer) : '';
 p.limitReplyBn = n.limit_reply_bn || '';
 p.limitReplyEn = n.limit_reply_en || '';
 return [{ json: p }];
 `;
 
-const LIMIT_REPLY_CODE = `${LANG_DETECT}
+const LIMIT_REPLY_CODE = `${LANG_DETECT}${ADDRESS_TERMS_CODE}
 const p = $input.first().json;
 // Bengali when the message clearly is; otherwise both (short Banglish like
 // "retinal ki beginner friendly?" doesn't score as Bengali but usually is)
 const bn = looksBengali(p.chatInput || '');
-const reply = (bn ? p.limitReplyBn : [p.limitReplyBn, p.limitReplyEn].filter(Boolean).join('\\n\\n'))
+const raw = (bn ? p.limitReplyBn : [p.limitReplyBn, p.limitReplyEn].filter(Boolean).join('\\n\\n'))
   || 'Sorry, today\\'s message limit is over. Please message us again tomorrow, or call +8801775-423477.';
+const reply = neutralizeAddress(raw, (p.profile && (p.profile.gender || p.profile.sex)) || '');
 return [{ json: { reply, conversation_id: p.conversationId || null, blocks: [], suggestions: [], token_usage: null, remaining: 0, limited: true } }];
-`;
-
-// COPY EXACTLY notebook entries (fixed store facts: delivery charge, address,
-// bKash, return policy, the cystic-acne form...) never need the model: the
-// staff text IS the answer. Answering it here also removes the old failure
-// where the orchestrator delegated to support_specialist and came back with a
-// paraphrased English summary (prod 2026-11-03 exec 5551).
-const NOTEBOOK_REPLY_CODE = `
-const p = $('Apply Notebook').first().json;
-return [{ json: {
-  reply: String(p.exactReply || ''),
-  conversation_id: p.conversationId || null,
-  blocks: [],
-  suggestions: [],
-  token_usage: null,
-  remaining: (typeof p.remaining === 'number') ? p.remaining : null,
-} }];
 `;
 
 // ---------------------------------------------------------------------------
@@ -440,7 +446,7 @@ const CART_ADD_TOOL = {
 //  - markers + META footer are stripped from reply (system-only metadata).
 // Block failures must NEVER break the reply: everything is wrapped in try/catch.
 // ---------------------------------------------------------------------------
-const RESPONSE_CODE = `${LANG_DETECT}
+const RESPONSE_CODE = `${LANG_DETECT}${ADDRESS_TERMS_CODE}
 // Every AI Agent reference below is by NAME ($('AI Agent'), never bare $input) -
 // Response now takes a SECOND input connection from Profile Questions Table
 // (see connections['Profile Questions Table'] below) so n8n's scheduler waits
@@ -484,6 +490,11 @@ if (notebookLeak) {
   const staff = (best && best.staff_answer) || (notebookExamples[0] && notebookExamples[0].staff_answer) || '';
   if (staff) replyTxt = String(staff);
 }
+// The model flags the gender it actually knows (CUSTOMER PROFILE, or the
+// customer said it) as metadata. Read it before any guard clears the text;
+// it decides স্যার vs ম্যাম vs the neutral স্যার/ম্যাম below.
+let turnGender = '';
+try { const gm = replyTxt.match(/META_GENDER:\\s*(male|female|m|f)\\b/i); if (gm) turnGender = gm[1].toLowerCase(); } catch {}
 // Known failure mode - verified live against prod executions 2026-10-19..22
 // (5 occurrences across 3 days for one customer alone): the model's whole
 // "reply" is sometimes the literal tool-invocation string it meant to call
@@ -550,6 +561,7 @@ function stripFooter(s) {
     .replace(/META_INFO_CARDS_JSON:[^\\n]*\\n?/gi, '')
     .replace(/META_SUGGESTIONS:[^\\n]*\\n?/gi, '')
     .replace(/META_PROFILE_ASK:[^\\n]*\\n?/gi, '')
+    .replace(/META_GENDER:[^\\n]*\\n?/gi, '')
     .trim();
 }
 function normalizeCurrency(s) {
@@ -1252,7 +1264,7 @@ try {
     // keep the model's own wording when it already asked without showing products
     if (removed || isRoutine) {
       replyTxt = looksBengali(cmG)
-        ? (isRoutine ? 'আপনার ত্বকের ধরন অনুযায়ী রুটিনটি সাজিয়ে দেব। ✨' : 'সঠিক প্রোডাক্ট সাজেস্ট করার আগে আপনার কয়েকটি তথ্য জানা দরকার ম্যাম। ✨')
+        ? (isRoutine ? 'আপনার ত্বকের ধরন অনুযায়ী রুটিনটি সাজিয়ে দেব। ✨' : 'সঠিক প্রোডাক্ট সাজেস্ট করার আগে আপনার কয়েকটি তথ্য জানা দরকার স্যার/ম্যাম। ✨')
         : (isRoutine ? "I'll tailor the routine to your skin. ✨" : 'To suggest the right product, I need a few details about your skin first. ✨');
     }
   }
@@ -1287,7 +1299,8 @@ out.blocks = blocks;
 // widget's own chip precedence checks data.suggestions BEFORE it checks for
 // these block types, so an un-caught suggestions array would bury the actual
 // action under more pills.
-out.suggestions = (wantsVariant || wantsApproval || doCheckout || wantsProfileAsk) ? [] : suggestions;
+const addressGender = knownProfile.gender || knownProfile.sex || turnGender;
+out.suggestions = (wantsVariant || wantsApproval || doCheckout || wantsProfileAsk) ? [] : suggestions.map((s) => neutralizeAddress(s, addressGender));
 // Deterministic backstop for the profile-question rule (dev/prompts.js): the
 // model is asked to end a general-recommendation reply with ONE combined
 // question for whichever of skin type/concern/budget it names via
@@ -1517,7 +1530,10 @@ if (leakedTool || supportIntentGuard || orderProblemGuard) {
     ? (bn ? ['আমার অর্ডার ট্র্যাক করুন', 'সাপোর্টে যোগাযোগ করুন'] : ['Track my order', 'Contact support'])
     : [];
 }
-const replyClean = normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000);
+const replyClean = neutralizeAddress(
+  normalizeCurrency(plainText(stripFooter(replyTxt))).replace(/[\u03b1\u00ba\u2502]{2,3}/g, '\u09f3').slice(0, 8000),
+  addressGender,
+);
 out.reply = replyClean;
 // messages left today under the daily limit (null = no limit / not counted)
 try { const a = $('Apply Notebook').first().json; if (typeof a.remaining === 'number') out.remaining = a.remaining; } catch {}
@@ -1663,36 +1679,6 @@ nodes.push(
     type: 'n8n-nodes-base.code',
     typeVersion: 2,
     position: pos(720, -620),
-  }),
-);
-// COPY EXACTLY notebook entries answer here, before (and instead of) the
-// model: the staff text is already the customer-facing answer, so there is
-// nothing for an LLM to paraphrase (prod 2026-11-03 exec 5551 replied with an
-// English summary of the store policy even though the exact Bangla staff text
-// was in context). Runs only on the NOT-limited branch - the limit still wins.
-nodes.push(
-  node({
-    parameters: {
-      conditions: {
-        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 3 },
-        combinator: 'and',
-        conditions: [{ id: 'exact-reply', leftValue: "={{ $json.exactReply || '' }}", rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } }],
-      },
-      options: {},
-    },
-    name: 'Exact Notebook Reply?',
-    type: 'n8n-nodes-base.if',
-    typeVersion: 2.3,
-    position: pos(1040, -620),
-  }),
-);
-nodes.push(
-  node({
-    parameters: { mode: 'runOnceForAllItems', language: 'javaScript', jsCode: NOTEBOOK_REPLY_CODE },
-    name: 'Notebook Reply',
-    type: 'n8n-nodes-base.code',
-    typeVersion: 2,
-    position: pos(1200, -620),
   }),
 );
 nodes.push(
@@ -1850,13 +1836,9 @@ connections['User ID Present?'] = { main: [[{ node: 'Respond 400', type: 'main',
 connections['Notebook Request'] = { main: [[{ node: 'Notebook Check', type: 'main', index: 0 }]] };
 connections['Notebook Check'] = { main: [[{ node: 'Apply Notebook', type: 'main', index: 0 }]] };
 connections['Apply Notebook'] = { main: [[{ node: 'Over Daily Limit?', type: 'main', index: 0 }]] };
-// true -> polite limit reply (no LLM call); false -> check for a COPY EXACTLY
-// notebook answer first, then the normal turn.
-connections['Over Daily Limit?'] = { main: [[{ node: 'Limit Reply', type: 'main', index: 0 }], [{ node: 'Exact Notebook Reply?', type: 'main', index: 0 }]] };
+// true -> polite limit reply (no LLM call); false -> the normal turn
+connections['Over Daily Limit?'] = { main: [[{ node: 'Limit Reply', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
 connections['Limit Reply'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
-// true -> staff text straight to the customer; false -> AI Agent + profile form.
-connections['Exact Notebook Reply?'] = { main: [[{ node: 'Notebook Reply', type: 'main', index: 0 }], [{ node: 'AI Agent', type: 'main', index: 0 }, { node: 'Profile Questions Table', type: 'main', index: 0 }]] };
-connections['Notebook Reply'] = { main: [[{ node: 'Respond Success', type: 'main', index: 0 }]] };
 connections[MODEL_NODE.nodeName] = { ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]] };
 connections['PG Memory'] = { ai_memory: [[{ node: 'AI Agent', type: 'ai_memory', index: 0 }]] };
 connections['AI Agent'] = { main: [[{ node: 'Wait For Profile Questions', type: 'main', index: 0 }]] };

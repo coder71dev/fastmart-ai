@@ -17,7 +17,9 @@
 //   alt            other ways customers ask the same thing (helps matching)
 //   a              the staff answer
 //   lesson         WHY staff answer this way — the part the AI generalises from
-//   exact          true = reuse the staff text as-is (numbers, links, policy)
+//   exact          true = its numbers/links/policy must stay exact; the reply
+//                  is still written by the model (the notebook is guidance,
+//                  never canned text)
 //   golden         true = lesson is shown to the AI on EVERY message
 //   free           true = still answered after the daily message limit
 

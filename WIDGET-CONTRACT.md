@@ -26,7 +26,7 @@ Authorization: Bearer {WEBHOOK_JWT_TOKEN}
   "message": "find me a serum under 2000 taka",   // user text (falls back to "Hi" if omitted)
   "user_id": "tmp-widget-<uuid>",                   // REQUIRED — the workflow 400s with {"error":"user_id is required"} if missing
   "conversation_id": "tmp-widget-<uuid>",           // optional — the chat-memory key; falls back to user_id when omitted
-  "profile": { "skin": "Oily", "age": "25-34", "concern": "Acne", "budget": "Under Tk 1500" }, // optional, quiz
+  "profile": { "skin": "Oily", "age": "25-34", "concern": "Acne", "budget": "Under Tk 1500", "gender": "female" }, // optional, quiz; gender is optional
   "action": { "type": "variant-selected", "product_id": 100, "variant": "45ml", "quantity": 1 } // optional; resumes a human-in-the-loop step
 }
 ```

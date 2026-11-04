@@ -169,23 +169,25 @@ const golden = rows.filter(r => r.golden_rule && r.lesson);
 
 const lines = [];
 // Whether example 1 is the same question (high score and clearly ahead of the
-// runner-up). Travels to agent-chat's Apply Notebook so a COPY EXACTLY entry
-// can be answered without calling the model at all (dev/build-main.mjs).
+// runner-up) - only decides how plainly the guidance tells the model to answer
+// it ITSELF instead of calling a specialist. The notebook never supplies the
+// reply text: examples show the decision and tone, the model writes the words.
 let strong = false;
 if (golden.length || examples.length) {
-  lines.push('STAFF NOTEBOOK — how Perfecto\\'s support staff answer. This OVERRIDES your own general knowledge and any product search.');
+  lines.push('STAFF NOTEBOOK — how Perfecto\\'s support staff handle questions like this. This OVERRIDES your own general knowledge and any product search. These are EXAMPLES of the decision and tone, NOT text to paste: always write your own reply in your own words, in the customer\\'s language.');
   if (golden.length) {
     lines.push('Golden rules (always apply):');
     for (const r of golden) lines.push('- ' + r.lesson);
   }
+  lines.push('ADDRESS: never default to "ম্যাম"/"mam". When the customer\\'s gender is unknown, write "স্যার/ম্যাম" in Bengali or "Sir/Ma\\'am" in English. If CUSTOMER PROFILE shows Gender (or the customer said it), use স্যার/Sir for a man and ম্যাম/Ma\\'am for a woman. The staff examples below say ম্যাম as staff shorthand — adapt it, never copy it blindly.');
   if (examples.length) {
     lines.push('');
-    lines.push('Past customer questions most similar in meaning to this message, with the staff answer. Follow the SAME pattern and decision (e.g. if staff suggested no product, suggest no product, show no product cards, write META_PROFILE_ASK: [] and never ask about budget). Adapt the wording to what the customer actually asked; reply in the customer\\'s language. When an example says COPY EXACTLY, reuse the staff text as written (facts, numbers, links, policy).');
+    lines.push('Past customer questions most similar in meaning to this message, with how staff answered. Follow the SAME decision (e.g. if staff suggested no product, suggest no product, show no product cards, write META_PROFILE_ASK: [] and never ask about budget) and keep the same FACTS exact (numbers, links, policy) — but write the reply yourself; do not paste the staff text.');
     examples.forEach((x, i) => {
       const r = x.r;
       lines.push('');
       lines.push((i + 1) + '. Customer: ' + r.customer_question);
-      lines.push('   Staff answer' + (r.copy_exactly ? ' (COPY EXACTLY)' : '') + ': ' + String(r.staff_answer || '').replace(/\\n/g, '\\n   '));
+      lines.push('   Staff answer: ' + String(r.staff_answer || '').replace(/\\n/g, '\\n   '));
       if (r.lesson) lines.push('   Lesson: ' + r.lesson);
     });
     lines.push('');
@@ -197,26 +199,24 @@ if (golden.length || examples.length) {
     const strongAt = num('strong_match', 0.87);
     strong = !!top && top.sim >= strongAt && (!second || top.sim - second.sim >= 0.03);
     if (strong) {
-      lines.push('STRONG MATCH: example 1 is the same question as this message. Answer it directly from that staff answer now' + (top.r.copy_exactly ? ' (copy it exactly)' : '') + ' — do NOT call support_specialist, product_discovery or any other tool for it.');
+      lines.push('STRONG MATCH: example 1 is the same question as this message. Answer it yourself in your own words, following that example\\'s decision and facts — do NOT call support_specialist, product_discovery or any other tool for it.');
     } else {
       lines.push('If none of these examples really fits the message, ignore them and answer normally — but the golden rules still apply.');
     }
   }
 }
 const guidance = lines.join('\\n');
-// staff_answer + lesson travel too: agent-chat uses them to repair a leaked
-// guidance header deterministically (prod 2026-11-03 exec 5542) and to answer
-// a COPY EXACTLY match without an LLM call (exec 5551). Internal only.
+// staff_answer + lesson travel too: agent-chat uses them only to repair a
+// leaked guidance header deterministically (prod 2026-11-03 exec 5542). They
+// are internal guidance, never a canned reply.
 const matches = examples.map(x => ({
   entry_key: x.r.entry_key,
   similarity: x.sim,
   customer_question: x.r.customer_question,
   copy_exactly: !!x.r.copy_exactly,
-  strong: false,
   staff_answer: String(x.r.staff_answer || ''),
   lesson: String(x.r.lesson || ''),
 }));
-if (matches[0]) matches[0].strong = strong;
 const nearMisses = scored.filter(x => x.sim < minSim).slice(0, 3).map(x => ({ entry_key: x.r.entry_key, similarity: x.sim }));
 
 const base = { job: req.action, guidance, matches, near_misses: nearMisses, golden_count: golden.length, embedded: !!q };

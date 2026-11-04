@@ -65,7 +65,7 @@ export const TABLES = {
 
 export const DEFAULT_SETTINGS = [
   ['daily_limit', '20', 'Messages one customer can send per day (Dhaka time). 0 = no limit.'],
-  ['limit_reply_bn', 'দুঃখিত ম্যাম, আজকের জন্য আপনার মেসেজ লিমিট শেষ হয়ে গেছে। আগামীকাল আবার মেসেজ করুন, অথবা এখনই কথা বলতে কল/WhatsApp করুন: +8801775-423477। ধন্যবাদ ❤️', 'Reply sent when the daily limit is reached (Bangla).'],
+  ['limit_reply_bn', 'দুঃখিত স্যার/ম্যাম, আজকের জন্য আপনার মেসেজ লিমিট শেষ হয়ে গেছে। আগামীকাল আবার মেসেজ করুন, অথবা এখনই কথা বলতে কল/WhatsApp করুন: +8801775-423477। ধন্যবাদ ❤️', 'Reply sent when the daily limit is reached (Bangla).'],
   ['limit_reply_en', 'Sorry, you have reached today\'s message limit. Please message us again tomorrow, or call/WhatsApp +8801775-423477 to talk to us now. Thank you ❤️', 'Reply sent when the daily limit is reached (English).'],
   ['ip_limit_multiplier', '3', 'Backup limit per internet address = daily_limit x this.'],
   ['examples_per_reply', '5', 'How many similar notebook examples the AI sees per message.'],
