@@ -357,11 +357,22 @@ return [{ json: p }];
 
 const LIMIT_REPLY_CODE = `${LANG_DETECT}${ADDRESS_TERMS_CODE}
 const p = $input.first().json;
+// A warm, clear limit message. The live bot_settings row is staff-owned and
+// still holds the first-fill text, so replace ONLY those known defaults here;
+// a text staff actually changed is kept as-is.
+const NEW_BN = 'দুঃখিত স্যার/ম্যাম 🌸\\nআজকের জন্য আপনার মেসেজ পাঠানোর সীমা শেষ হয়ে গেছে, তাই এই মুহূর্তে নতুন মেসেজের উত্তর দেওয়া সম্ভব হচ্ছে না। অসুবিধার জন্য আমরা আন্তরিকভাবে দুঃখিত।\\n\\nআগামীকাল আবার মেসেজ করলে আপনার নতুন দিনের মেসেজ শুরু হবে — তখন আমরা আবার সাহায্য করতে পারব।\\n\\nএখনই আমাদের সাথে কথা বলতে চাইলে কল বা WhatsApp করুন: +8801775-423477 (সকাল ১০টা – রাত ৮টা)।\\n\\nআপনার যত্নে আমরা সবসময় পাশে আছি ❤️';
+const NEW_EN = "Sorry, Sir/Ma'am 🌸\\nYou've used today's message limit, so we can't answer new messages right now. We're truly sorry for the inconvenience.\\n\\nPlease message us again tomorrow — your new day's messages will start then, and we'll be glad to help.\\n\\nTo talk to us now, call or WhatsApp: +8801775-423477 (10am–8pm).\\n\\nWe're always here for you ❤️";
+const OLD_BN = 'দুঃখিত ম্যাম, আজকের জন্য আপনার মেসেজ লিমিট শেষ হয়ে গেছে। আগামীকাল আবার মেসেজ করুন, অথবা এখনই কথা বলতে কল/WhatsApp করুন: +8801775-423477। ধন্যবাদ ❤️';
+const OLD_BN2 = 'দুঃখিত স্যার/ম্যাম, আজকের জন্য আপনার মেসেজ লিমিট শেষ হয়ে গেছে। আগামীকাল আবার মেসেজ করুন, অথবা এখনই কথা বলতে কল/WhatsApp করুন: +8801775-423477। ধন্যবাদ ❤️';
+const OLD_EN = "Sorry, you have reached today's message limit. Please message us again tomorrow, or call/WhatsApp +8801775-423477 to talk to us now. Thank you ❤️";
+const bnRaw = String(p.limitReplyBn || '').trim();
+const enRaw = String(p.limitReplyEn || '').trim();
+const bnText = (!bnRaw || bnRaw === OLD_BN || bnRaw === OLD_BN2) ? NEW_BN : bnRaw;
+const enText = (!enRaw || enRaw === OLD_EN) ? NEW_EN : enRaw;
 // Bengali when the message clearly is; otherwise both (short Banglish like
 // "retinal ki beginner friendly?" doesn't score as Bengali but usually is)
 const bn = looksBengali(p.chatInput || '');
-const raw = (bn ? p.limitReplyBn : [p.limitReplyBn, p.limitReplyEn].filter(Boolean).join('\\n\\n'))
-  || 'Sorry, today\\'s message limit is over. Please message us again tomorrow, or call +8801775-423477.';
+const raw = bn ? bnText : [bnText, enText].filter(Boolean).join('\\n\\n');
 const reply = neutralizeAddress(raw, (p.profile && (p.profile.gender || p.profile.sex)) || '');
 return [{ json: { reply, conversation_id: p.conversationId || null, blocks: [], suggestions: [], token_usage: null, remaining: 0, limited: true } }];
 `;

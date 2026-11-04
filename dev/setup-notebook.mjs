@@ -65,8 +65,8 @@ export const TABLES = {
 
 export const DEFAULT_SETTINGS = [
   ['daily_limit', '20', 'Messages one customer can send per day (Dhaka time). 0 = no limit.'],
-  ['limit_reply_bn', 'দুঃখিত স্যার/ম্যাম, আজকের জন্য আপনার মেসেজ লিমিট শেষ হয়ে গেছে। আগামীকাল আবার মেসেজ করুন, অথবা এখনই কথা বলতে কল/WhatsApp করুন: +8801775-423477। ধন্যবাদ ❤️', 'Reply sent when the daily limit is reached (Bangla).'],
-  ['limit_reply_en', 'Sorry, you have reached today\'s message limit. Please message us again tomorrow, or call/WhatsApp +8801775-423477 to talk to us now. Thank you ❤️', 'Reply sent when the daily limit is reached (English).'],
+  ['limit_reply_bn', 'দুঃখিত স্যার/ম্যাম 🌸\nআজকের জন্য আপনার মেসেজ পাঠানোর সীমা শেষ হয়ে গেছে, তাই এই মুহূর্তে নতুন মেসেজের উত্তর দেওয়া সম্ভব হচ্ছে না। অসুবিধার জন্য আমরা আন্তরিকভাবে দুঃখিত।\n\nআগামীকাল আবার মেসেজ করলে আপনার নতুন দিনের মেসেজ শুরু হবে — তখন আমরা আবার সাহায্য করতে পারব।\n\nএখনই আমাদের সাথে কথা বলতে চাইলে কল বা WhatsApp করুন: +8801775-423477 (সকাল ১০টা – রাত ৮টা)।\n\nআপনার যত্নে আমরা সবসময় পাশে আছি ❤️', 'Reply sent when the daily limit is reached (Bangla).'],
+  ['limit_reply_en', "Sorry, Sir/Ma'am 🌸\nYou've used today's message limit, so we can't answer new messages right now. We're truly sorry for the inconvenience.\n\nPlease message us again tomorrow — your new day's messages will start then, and we'll be glad to help.\n\nTo talk to us now, call or WhatsApp: +8801775-423477 (10am–8pm).\n\nWe're always here for you ❤️", 'Reply sent when the daily limit is reached (English).'],
   ['ip_limit_multiplier', '3', 'Backup limit per internet address = daily_limit x this.'],
   ['examples_per_reply', '5', 'How many similar notebook examples the AI sees per message.'],
   ['min_similarity', '0.80', 'Examples less similar than this (0-1) are ignored. Unrelated messages score up to ~0.86, real matches usually 0.85+.'],
