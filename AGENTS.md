@@ -47,6 +47,16 @@ and load-bearing; don't add a DB connection to the store as a shortcut.
 > staff answer, change the row (or ask staff to), not `dev/notebook-seed.js`, which is only the
 > first fill. An explicit `MODEL_PROVIDER`/`MODEL` env var still overrides the model for one run.
 
+> **Daily limit — the hard IP cap is OFF (2026-11-08).** Per-customer
+> `u:<user_id>` is the only enforced limit (20/day). The shared `ip:<address>`
+> row is still written to `daily_usage` but **not enforced**:
+> `IP_CAP_ENABLED = false` in `dev/build-notebook-tools.mjs`. Reason: customers
+> on one public IP (family, office, mobile-carrier NAT) blocked each other after
+> 60 messages on that IP. Read the code comment before turning it back on.
+> Also: `daily_usage` must be read **by Dhaka day only** (fixed 2026-11-08 —
+> without it the previous day's count carried over and users were blocked from
+> their first message).
+
 It is *possible* to open the n8n editor and hand-edit a node. **Don't, except
 for a scoped hotfix you immediately port back into `dev/build-main.mjs` /
 `dev/build-workflows.mjs` / `dev/prompts.js` in the same session.** Every time

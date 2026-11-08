@@ -229,7 +229,21 @@ let day;
 try { day = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
 catch (e) { day = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10); }
 const limit = Math.max(0, Math.round(num('daily_limit', 20)));
-const ipLimit = limit * Math.max(1, num('ip_limit_multiplier', 3));
+// ============================ IP CAP IS OFF ================================
+// DISABLED 2026-11-08. Customers on a shared public IP (family, office,
+// mobile-carrier NAT) were blocking EACH OTHER once the shared ip:<address>
+// row reached daily_limit x ip_limit_multiplier (20 x 3 = 60): the 61st
+// message on that IP was refused even for a customer who had sent only a few.
+// Per-customer u:<user_id> daily_limit is the real limit. The IP cap was only
+// an anti-abuse backup for someone clearing browser storage to mint a new
+// user_id, and false blocks on real shared-IP customers cost sales.
+// The ip:<address> row is still WRITTEN (tracked for future abuse analysis)
+// but never enforced while IP_CAP_ENABLED is false.
+// To re-enable: set IP_CAP_ENABLED = true and a positive ip_limit_multiplier
+// in bot_settings. Also update AGENTS.md and WIDGET-CONTRACT.md.
+// ===========================================================================
+const IP_CAP_ENABLED = false;
+const ipLimit = IP_CAP_ENABLED ? limit * Math.max(1, num('ip_limit_multiplier', 3)) : 0;
 const usage = {};
 // ONLY today's row counts. Usage Today reads every row for this user/IP (the
 // Day filter cannot be added to the Data Table node because its matchType is
@@ -247,7 +261,7 @@ const ipCount = ipKey ? (usage[ipKey] || 0) : 0;
 
 // staff test runs (perfecto-ai-ops auto-test) and eval-harness runs are never limited or counted
 const exempt = req.eval || /^ops-test-/.test(req.user_key) || !userKey;
-const over = !exempt && limit > 0 && (userCount >= limit || (ipKey && ipCount >= ipLimit));
+const over = !exempt && limit > 0 && (userCount >= limit || (IP_CAP_ENABLED && ipLimit > 0 && ipKey && ipCount >= ipLimit));
 const top = scored[0];
 const freeFact = !!(top && top.sim >= Math.max(minSim, 0.88) && top.r.free_past_limit);
 const allowed = !over || freeFact;
