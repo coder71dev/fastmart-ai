@@ -231,7 +231,15 @@ catch (e) { day = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10); 
 const limit = Math.max(0, Math.round(num('daily_limit', 20)));
 const ipLimit = limit * Math.max(1, num('ip_limit_multiplier', 3));
 const usage = {};
-for (const i of $('Usage Today').all()) if (i.json && i.json.user_key) usage[i.json.user_key] = Number(i.json.count) || 0;
+// ONLY today's row counts. Usage Today reads every row for this user/IP (the
+// Day filter cannot be added to the Data Table node because its matchType is
+// anyCondition for user_key OR ip). Without this check the last historical
+// row wins: live 2026-11-08 the Nov 4 count of 20 was read as today's, so the
+// user was blocked from their very first message every day.
+for (const i of $('Usage Today').all()) {
+  const r = i.json || {};
+  if (r.user_key && String(r.day || '') === day) usage[r.user_key] = Number(r.count) || 0;
+}
 const userKey = req.user_key ? 'u:' + req.user_key : '';
 const ipKey = req.ip ? 'ip:' + req.ip : '';
 const userCount = userKey ? (usage[userKey] || 0) : 0;
